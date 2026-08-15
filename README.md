@@ -20,7 +20,8 @@ BatteryHolder connects to your board over **Bluetooth LE** or **Wi‑Fi**, reads
 
 ```
 BatteryHolder/
-├── project.yml                 # XcodeGen project definition
+├── BatteryHolder.xcodeproj/    # Ready-to-open Xcode project (Xcode 16+)
+├── project.yml                 # XcodeGen definition (alternative to the above)
 ├── ios/BatteryHolder/          # SwiftUI app sources
 │   ├── App/                    # App entry, global state, Info.plist
 │   ├── DesignSystem/           # Design tokens + reusable components
@@ -37,24 +38,25 @@ BatteryHolder/
 
 ### Requirements
 
-- Xcode 15 or newer, iOS 16 SDK
+- **Xcode 16 or newer** (the committed project uses file-system-synchronized groups), iOS 16 SDK
 - An iPhone (BLE and Local Network permissions do not work in the Simulator)
-- [XcodeGen](https://github.com/yonyz/XcodeGen) (`brew install xcodegen`)
 
-### Generate the Xcode project
+### Open the project
+
+The Xcode project is committed — just open it:
 
 ```bash
-brew install xcodegen        # one time
 cd BatteryHolder
-xcodegen generate            # reads project.yml -> BatteryHolder.xcodeproj
 open BatteryHolder.xcodeproj
 ```
 
+Because the project uses synchronized folders, any file you add under
+`ios/BatteryHolder/` is picked up automatically — no manual "Add Files" step.
 Set your development team in **Signing & Capabilities**, plug in a device, and run.
 
-> Don't want XcodeGen? The sources under `ios/BatteryHolder` are a plain SwiftUI
-> app — create a new iOS App target in Xcode, drag the folders in, and copy the
-> keys from `ios/BatteryHolder/App/Info.plist`.
+> **On Xcode 15 or earlier?** Use XcodeGen instead:
+> `brew install xcodegen && xcodegen generate` regenerates
+> `BatteryHolder.xcodeproj` from `project.yml`.
 
 ### Point the app at your backend
 
@@ -79,4 +81,4 @@ over the air.
 
 ## License
 
-MIT — see below. Reference firmware is provided as-is for evaluation.
+MIT. Reference firmware is provided as-is for evaluation.

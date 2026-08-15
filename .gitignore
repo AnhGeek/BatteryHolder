@@ -4,17 +4,13 @@
 ## Xcode
 build/
 DerivedData/
-*.xcodeproj/*
-!*.xcodeproj/project.pbxproj
-!*.xcodeproj/xcshareddata/
-*.xcworkspace/*
-!*.xcworkspace/contents.xcworkspacedata
 xcuserdata/
 *.xcuserstate
 *.moved-aside
-
-## XcodeGen generates this from project.yml
-BatteryHolder.xcodeproj/
+*.xcworkspace/xcuserdata/
+# Keep the committed project + shared scheme, ignore per-user state only.
+BatteryHolder.xcodeproj/project.xcworkspace/xcuserdata/
+BatteryHolder.xcodeproj/xcuserdata/
 
 ## Swift Package Manager
 .build/
