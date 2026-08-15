@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXFileReference section */
@@ -11,7 +11,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		BA77E0000000000000000010 /* Exceptions for "BatteryHolder" folder in "BatteryHolder" target */ = {
+		BA77E0000000000000000010 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				App/Info.plist,
@@ -21,14 +21,7 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		BA77E0000000000000000004 /* BatteryHolder */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				BA77E0000000000000000010 /* Exceptions for "BatteryHolder" folder in "BatteryHolder" target */,
-			);
-			path = "ios/BatteryHolder";
-			sourceTree = "<group>";
-		};
+		BA77E0000000000000000004 /* ios/BatteryHolder */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (BA77E0000000000000000010 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = ios/BatteryHolder; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -45,7 +38,7 @@
 		BA77E0000000000000000002 = {
 			isa = PBXGroup;
 			children = (
-				BA77E0000000000000000004 /* BatteryHolder */,
+				BA77E0000000000000000004 /* ios/BatteryHolder */,
 				BA77E0000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -74,7 +67,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				BA77E0000000000000000004 /* BatteryHolder */,
+				BA77E0000000000000000004 /* ios/BatteryHolder */,
 			);
 			name = BatteryHolder;
 			productName = BatteryHolder;
@@ -259,7 +252,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "ios/BatteryHolder/App/Info.plist";
+				INFOPLIST_FILE = ios/BatteryHolder/App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -268,9 +261,13 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = store.lyhoanganh.batteryholder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -282,7 +279,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "ios/BatteryHolder/App/Info.plist";
+				INFOPLIST_FILE = ios/BatteryHolder/App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -291,9 +288,13 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = store.lyhoanganh.batteryholder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
