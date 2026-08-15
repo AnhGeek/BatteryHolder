@@ -172,3 +172,114 @@ struct TransportBadge: View {
             .clipShape(Capsule())
     }
 }
+
+// MARK: - Preview
+
+#if DEBUG
+/// Gallery of every design-system component, for tweaking tokens in isolation.
+private struct ComponentGallery: View {
+    private let pins = Board.previewESP32.adcCapablePins
+
+    // Split into small sub-views: one big literal body blows the type-checker budget.
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.spacing.xl) {
+                SectionHeader(title: "Section header", subtitle: "With a subtitle")
+                cardSample
+                buttons
+                statPills
+                badges
+                pinChips
+                gauges
+                sparkline
+                callouts
+            }
+            .padding(Theme.spacing.lg)
+        }
+        .background(Theme.color.background)
+    }
+
+    private var cardSample: some View {
+        Card {
+            Text("Card content")
+                .font(Theme.font.body)
+                .foregroundStyle(Theme.color.textPrimary)
+        }
+    }
+
+    private var buttons: some View {
+        VStack(spacing: Theme.spacing.sm) {
+            Button("Primary") {}.buttonStyle(PrimaryButtonStyle())
+            Button("Primary (disabled)") {}.buttonStyle(PrimaryButtonStyle(enabled: false))
+            Button("Secondary") {}.buttonStyle(SecondaryButtonStyle())
+        }
+    }
+
+    private var statPills: some View {
+        HStack(spacing: Theme.spacing.sm) {
+            StatPill(label: "Raw ADC", value: "2531")
+            StatPill(label: "Pin", value: "GPIO34", tint: Theme.color.accent)
+            StatPill(label: "Transport", value: "BLE", tint: Theme.color.textSecondary)
+        }
+    }
+
+    private var badges: some View {
+        HStack(spacing: Theme.spacing.xs) {
+            ForEach(FlashTransport.allCases) { TransportBadge(transport: $0) }
+        }
+    }
+
+    private var pinChips: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 84), spacing: Theme.spacing.sm)],
+                  spacing: Theme.spacing.sm) {
+            ForEach(Array(pins.enumerated()), id: \.element.id) { index, pin in
+                PinChip(pin: pin, isSelected: index == 0)
+            }
+        }
+    }
+
+    /// The gauge across the full battery color scale.
+    private var gauges: some View {
+        HStack(spacing: Theme.spacing.md) {
+            ForEach([0.92, 0.45, 0.18, 0.05], id: \.self) { pct in
+                VStack(spacing: Theme.spacing.xs) {
+                    BatteryGauge(fraction: pct, color: Theme.color.battery(forPercentage: pct))
+                        .frame(width: 64, height: 64)
+                    Text(String(format: "%.0f%%", pct * 100))
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.textSecondary)
+                }
+            }
+        }
+    }
+
+    private var sparkline: some View {
+        let values: [Double] = (0..<40).map { i in
+            let t: Double = Double(i) / 39.0
+            return 4.05 - 0.3 * t + sin(Double(i) / 3.0) * 0.01
+        }
+        return Card {
+            Sparkline(values: values).frame(height: 80)
+        }
+    }
+
+    private var callouts: some View {
+        VStack(spacing: Theme.spacing.sm) {
+            Callout(text: "Informational callout.", tint: Theme.color.brand)
+            Callout(text: "Warning callout.", tint: Theme.color.warning,
+                    icon: "exclamationmark.triangle.fill")
+            Callout(text: "Error callout.", tint: Theme.color.danger,
+                    icon: "xmark.octagon.fill")
+        }
+    }
+}
+
+struct Components_Previews: PreviewProvider {
+    static var previews: some View {
+        Group {
+            ComponentGallery().previewDisplayName("Light")
+            ComponentGallery().preferredColorScheme(.dark).previewDisplayName("Dark")
+        }
+    }
+}
+#endif

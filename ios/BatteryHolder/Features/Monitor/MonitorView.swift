@@ -82,3 +82,25 @@ struct MonitorView: View {
         return pin.name
     }
 }
+
+#if DEBUG
+struct MonitorView_Previews: PreviewProvider {
+    static var previews: some View {
+        Group {
+            NavigationStack { MonitorView() }
+                .environmentObject(AppState.preview)
+                .previewDisplayName("Live readings")
+
+            NavigationStack { MonitorView() }
+                .environmentObject(AppState.previewEmpty)
+                .previewDisplayName("Not configured")
+
+            NavigationStack { MonitorView() }
+                .environmentObject(AppState.preview)
+                .preferredColorScheme(.dark)
+                .previewDisplayName("Dark")
+        }
+        .tint(Theme.color.brand)
+    }
+}
+#endif

@@ -73,3 +73,25 @@ struct BoardSetupView: View {
         }
     }
 }
+
+#if DEBUG
+struct BoardSetupView_Previews: PreviewProvider {
+    static var previews: some View {
+        Group {
+            NavigationStack { BoardSetupView() }
+                .environmentObject(AppState.preview)
+                .previewDisplayName("Board selected")
+
+            NavigationStack { BoardSetupView() }
+                .environmentObject(AppState.previewEmpty)
+                .previewDisplayName("Nothing selected")
+
+            NavigationStack { BoardSetupView() }
+                .environmentObject(AppState.preview)
+                .preferredColorScheme(.dark)
+                .previewDisplayName("Dark")
+        }
+        .tint(Theme.color.brand)
+    }
+}
+#endif

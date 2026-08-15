@@ -19,3 +19,13 @@ struct RootTabView: View {
         }
     }
 }
+
+#if DEBUG
+struct RootTabView_Previews: PreviewProvider {
+    static var previews: some View {
+        RootTabView()
+            .environmentObject(AppState.preview)
+            .tint(Theme.color.brand)
+    }
+}
+#endif

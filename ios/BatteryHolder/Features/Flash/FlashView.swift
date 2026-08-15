@@ -166,3 +166,28 @@ private struct FlashProgressCard: View {
         }
     }
 }
+
+#if DEBUG
+struct FlashView_Previews: PreviewProvider {
+    // With a board selected, `.task` calls the real catalog. `AppConfig` still
+    // points at the REPLACE_ME endpoint, so the canvas shows the load-error
+    // Callout — which is the state you'd get on-device before wiring up AWS.
+    static var previews: some View {
+        Group {
+            NavigationStack { FlashView() }
+                .environmentObject(AppState.preview)
+                .previewDisplayName("Board selected")
+
+            NavigationStack { FlashView() }
+                .environmentObject(AppState.previewEmpty)
+                .previewDisplayName("No board")
+
+            NavigationStack { FlashView() }
+                .environmentObject(AppState.preview)
+                .preferredColorScheme(.dark)
+                .previewDisplayName("Dark")
+        }
+        .tint(Theme.color.brand)
+    }
+}
+#endif

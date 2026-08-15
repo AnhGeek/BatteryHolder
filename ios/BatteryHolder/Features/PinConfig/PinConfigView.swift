@@ -217,3 +217,39 @@ struct ContentUnavailableViewCompat: View {
         .padding(Theme.spacing.xl)
     }
 }
+
+#if DEBUG
+struct PinConfigView_Previews: PreviewProvider {
+    /// Wi-Fi selected with an ADC2 pin — exercises the conflict warning.
+    static var adc2Conflict: AppState {
+        let state = AppState.preview
+        state.activeTransport = .wifi
+        if let pin = state.selectedBoard?.pin(withId: "gpio25") {
+            state.setBatteryPin(pin)
+        }
+        return state
+    }
+
+    static var previews: some View {
+        Group {
+            NavigationStack { PinConfigView() }
+                .environmentObject(AppState.preview)
+                .previewDisplayName("Configured")
+
+            NavigationStack { PinConfigView() }
+                .environmentObject(adc2Conflict)
+                .previewDisplayName("ADC2 + Wi-Fi warning")
+
+            NavigationStack { PinConfigView() }
+                .environmentObject(AppState.previewEmpty)
+                .previewDisplayName("No board")
+
+            NavigationStack { PinConfigView() }
+                .environmentObject(AppState.preview)
+                .preferredColorScheme(.dark)
+                .previewDisplayName("Dark")
+        }
+        .tint(Theme.color.brand)
+    }
+}
+#endif

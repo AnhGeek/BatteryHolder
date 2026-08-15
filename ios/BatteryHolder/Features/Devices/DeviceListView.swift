@@ -128,3 +128,34 @@ private struct WiFiDeviceList: View {
         }
     }
 }
+
+#if DEBUG
+struct DeviceListView_Previews: PreviewProvider {
+    static var wifiSelected: AppState {
+        let state = AppState.preview
+        state.activeTransport = .wifi
+        return state
+    }
+
+    // Note: the device rows stay empty here. `BLEManager.discovered` holds real
+    // `CBPeripheral`s and `WiFiOTAService.discovered` is `private(set)`, so a
+    // preview can only show the pre-scan state, not fake results.
+    static var previews: some View {
+        Group {
+            NavigationStack { DeviceListView() }
+                .environmentObject(AppState.preview)
+                .previewDisplayName("Bluetooth")
+
+            NavigationStack { DeviceListView() }
+                .environmentObject(wifiSelected)
+                .previewDisplayName("Wi-Fi")
+
+            NavigationStack { DeviceListView() }
+                .environmentObject(wifiSelected)
+                .preferredColorScheme(.dark)
+                .previewDisplayName("Dark")
+        }
+        .tint(Theme.color.brand)
+    }
+}
+#endif
