@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>BatteryHolder</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+    </array>
+
+    <!-- Bluetooth LE: connect to and flash ESP boards -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>BatteryHolder uses Bluetooth to connect to your ESP32/ESP8266 board to read battery voltage and flash firmware.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>BatteryHolder uses Bluetooth to communicate with your ESP32/ESP8266 board.</string>
+
+    <!-- Wi-Fi / Local Network OTA: discover boards via Bonjour and upload firmware -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>BatteryHolder finds your ESP board on the local network to read voltage and upload firmware over the air.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_batteryholder._tcp</string>
+        <string>_arduino._tcp</string>
+    </array>
+
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+    </array>
+</dict>
+</plist>
