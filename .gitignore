@@ -1,0 +1,36 @@
+## macOS
+.DS_Store
+
+## Xcode
+build/
+DerivedData/
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+*.xcworkspace/*
+!*.xcworkspace/contents.xcworkspacedata
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+
+## XcodeGen generates this from project.yml
+BatteryHolder.xcodeproj/
+
+## Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+## CocoaPods / Carthage (if ever added)
+Pods/
+Carthage/Build/
+
+## AWS SAM
+backend/.aws-sam/
+samconfig.toml
+
+## Secrets
+*.pem
+*.p12
+.env
