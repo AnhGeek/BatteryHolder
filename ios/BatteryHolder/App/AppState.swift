@@ -29,6 +29,12 @@ final class AppState: ObservableObject {
     @Published private(set) var readings: [BatteryReading] = []
     @Published var isMonitoring = false
 
+    // MARK: Startup / splash
+    /// True while the app is warming up; drives the splash screen.
+    @Published private(set) var isBootstrapping = true
+    /// Human-readable status shown on the splash.
+    @Published private(set) var bootstrapStatus = "Starting up…"
+
     // MARK: Services
     let ble: BLEManager
     let wifi: WiFiOTAService
@@ -48,6 +54,46 @@ final class AppState: ObservableObject {
 
         self.boards = Self.loadBoards()
         wireSampleStreams()
+    }
+
+    // MARK: Startup
+
+    /// Warm up the app and fetch initial data. Drives the splash screen.
+    ///
+    /// The visible duration is not fixed — it ends when the work finishes. A
+    /// soft timeout keeps a slow or unreachable backend from holding the splash
+    /// indefinitely, and a small minimum keeps it from flickering past too fast.
+    func bootstrap() async {
+        let start = Date()
+        bootstrapStatus = "Loading boards…"
+
+        bootstrapStatus = "Fetching data…"
+        await prefetchCatalog()
+
+        let minVisible: TimeInterval = 0.9
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed < minVisible {
+            try? await Task.sleep(nanoseconds: UInt64((minVisible - elapsed) * 1_000_000_000))
+        }
+
+        bootstrapStatus = "Ready"
+        isBootstrapping = false
+    }
+
+    /// Prefetch the firmware catalog to warm the network path. Returns as soon
+    /// as the request finishes or a soft timeout elapses, whichever comes first.
+    private func prefetchCatalog() async {
+        guard let board = selectedBoard ?? boards.first else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [firmwareRepo] in
+                _ = try? await firmwareRepo.listFirmware(boardId: board.id)
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 6_000_000_000) // 6s ceiling
+            }
+            _ = await group.next()   // continue after the first finishes
+            group.cancelAll()
+        }
     }
 
     // MARK: Board & pin selection
