@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  BatteryHolder firmware distribution backend.
+  S3 (artifacts) + DynamoDB (metadata) + Lambda + HTTP API + Cognito auth.
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+  PresignTtlSeconds:
+    Type: Number
+    Default: 300
+    Description: Lifetime of presigned firmware download URLs.
+
+Globals:
+  Function:
+    Timeout: 15
+    MemorySize: 256
+    Runtime: nodejs20.x
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        FIRMWARE_TABLE: !Ref FirmwareTable
+        FIRMWARE_BUCKET: !Ref FirmwareBucket
+        PRESIGN_TTL: !Ref PresignTtlSeconds
+
+Resources:
+
+  FirmwareBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  FirmwareTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: batteryholder-users
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+          RequireLowercase: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: batteryholder-ios
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  FirmwareApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      Auth:
+        Authorizers:
+          CognitoJWT:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+              audience:
+                - !Ref UserPoolClient
+        DefaultAuthorizer: CognitoJWT
+      CorsConfiguration:
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [Authorization, Content-Type]
+        AllowOrigins: ['*']
+
+  FirmwareFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handler.handler
+      CodeUri: src/
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FirmwareTable
+        - S3CrudPolicy:
+            BucketName: !Ref FirmwareBucket
+      Events:
+        ListForBoard:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: GET
+            Path: /boards/{boardId}/firmware
+        GetDetail:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: GET
+            Path: /firmware/{buildId}
+        Register:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: POST
+            Path: /firmware
+
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL for the firmware API
+    Value: !Sub https://${FirmwareApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+  FirmwareBucketName:
+    Value: !Ref FirmwareBucket
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
