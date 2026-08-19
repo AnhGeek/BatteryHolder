@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  BatteryHolder firmware distribution backend.
-  S3 (artifacts) + DynamoDB (metadata) + Lambda + HTTP API + Cognito auth.
+  BatteryHolder backend: firmware distribution + device fleet.
+  S3 (artifacts) + DynamoDB (metadata, devices, telemetry) + Lambda + HTTP API
+  + Cognito auth. Boards authenticate with a per-device token instead of a JWT.
 
 Parameters:
   StageName:
@@ -12,6 +13,14 @@ Parameters:
     Type: Number
     Default: 300
     Description: Lifetime of presigned firmware download URLs.
+  DefaultReportSeconds:
+    Type: Number
+    Default: 900
+    Description: How long a Wi-Fi board deep sleeps between cloud check-ins.
+  ReadingTtlDays:
+    Type: Number
+    Default: 30
+    Description: How long telemetry history is kept before DynamoDB expires it.
 
 Globals:
   Function:
@@ -24,6 +33,8 @@ Globals:
         FIRMWARE_TABLE: !Ref FirmwareTable
         FIRMWARE_BUCKET: !Ref FirmwareBucket
         PRESIGN_TTL: !Ref PresignTtlSeconds
+        DEFAULT_REPORT_SEC: !Ref DefaultReportSeconds
+        READING_TTL_DAYS: !Ref ReadingTtlDays
 
 Resources:
 
@@ -55,11 +66,28 @@ Resources:
           AttributeType: S
         - AttributeName: SK
           AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
       KeySchema:
         - AttributeName: PK
           KeyType: HASH
         - AttributeName: SK
           KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # Devices by owner, for the app's device list.
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
 
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -99,8 +127,8 @@ Resources:
                 - !Ref UserPoolClient
         DefaultAuthorizer: CognitoJWT
       CorsConfiguration:
-        AllowMethods: [GET, POST, OPTIONS]
-        AllowHeaders: [Authorization, Content-Type]
+        AllowMethods: [GET, POST, DELETE, OPTIONS]
+        AllowHeaders: [Authorization, Content-Type, X-Device-Token]
         AllowOrigins: ['*']
 
   FirmwareFunction:
@@ -132,6 +160,46 @@ Resources:
             ApiId: !Ref FirmwareApi
             Method: POST
             Path: /firmware
+        ClaimDevice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: POST
+            Path: /devices/claim
+        ListDevices:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: GET
+            Path: /devices
+        GetDevice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: GET
+            Path: /devices/{deviceId}
+        ReleaseDevice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: DELETE
+            Path: /devices/{deviceId}
+        QueueCommand:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: POST
+            Path: /devices/{deviceId}/commands
+        # Boards have no user session: this route carries X-Device-Token and is
+        # authorized inside the handler against the claimed device's token hash.
+        Telemetry:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FirmwareApi
+            Method: POST
+            Path: /devices/{deviceId}/telemetry
+            Auth:
+              Authorizer: NONE
 
 Outputs:
   ApiBaseUrl:
