@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Native launch window shown until the Flutter engine draws its first frame.
+     Solid brand navy so it hands off to SplashView with no white flash —
+     the counterpart of the iOS UILaunchScreen LaunchBackground color. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/ic_launcher_background" />
+</layer-list>

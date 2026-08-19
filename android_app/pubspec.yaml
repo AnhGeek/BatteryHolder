@@ -1,0 +1,36 @@
+name: battery_holder
+description: "ESP32 / ESP8266 battery monitoring and OTA flashing — Android port of the iOS app."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management: mirrors the iOS `@EnvironmentObject AppState` composition root.
+  provider: ^6.1.2
+
+  # Transports
+  flutter_blue_plus: ^1.35.5      # CoreBluetooth equivalent
+  nsd: ^3.0.0                     # Bonjour / mDNS browsing (NWBrowser equivalent)
+  http: ^1.2.2                    # URLSession equivalent
+
+  # Firmware handling
+  crypto: ^3.0.6                  # SHA-256 verification of downloaded images
+  file_picker: ^10.3.4             # .bin importer (fileImporter equivalent)
+  permission_handler: ^11.3.1     # Android 12+ runtime Bluetooth permissions
+  intl: ^0.20.2                   # Byte/number formatting
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/boards.json
