@@ -77,10 +77,18 @@ Both transports expose the same three capabilities. The reference firmware in
 | Pin config | `…-0004-…` | Read, Write | UTF‑8 JSON of `PinConfiguration` |
 | OTA control | `…-0005-…` | Write, Notify | 1 byte cmd + status codes |
 | OTA data | `…-0006-…` | Write w/o response | firmware chunk (≤ MTU‑3) |
+| Wi‑Fi provisioning | `…-0007-…` | Read, Write | UTF‑8 JSON credentials + device token |
+| Status / events | `…-0008-…` | Read, Notify | UTF‑8 JSON device status |
+| Session control | `…-0009-…` | Write | 1 byte cmd (stay awake / sleep / reset) |
 
 OTA sequence: write `START|totalSize` to control → stream chunks to data →
 write `END|crc32` to control → firmware verifies, replies `OK`/`ERR` on the
 control notify, then reboots.
+
+Boards deep sleep between wakes, so a BLE session is a borrowed window: the app
+writes `STAY_AWAKE` on the session characteristic while a screen needs live
+data and `SLEEP_NOW` when it leaves. Full contract in
+[DEVICE_PROTOCOL.md](DEVICE_PROTOCOL.md).
 
 ### Wi‑Fi (HTTP over local network)
 
@@ -88,10 +96,19 @@ Discovered via Bonjour service `_batteryholder._tcp`. Endpoints on the board:
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/voltage` | JSON `{ "raw": 2731, "volts": 3.94, "pin": "GPIO34" }` |
+| `GET` | `/api/voltage` | JSON `{ "raw": 2731, "volts": 3.94, "soc": 0.78, "pin": "gpio34" }` |
+| `GET` | `/api/status` | device status: mode, Wi‑Fi state, sleep countdown |
 | `GET` | `/api/config` | current `PinConfiguration` JSON |
 | `POST` | `/api/config` | apply a new `PinConfiguration` |
+| `GET` `POST` | `/api/power` | read / apply the sleep + reporting block |
 | `POST` | `/update` | multipart firmware upload (ArduinoOTA‑style), streams progress |
+
+### Cloud (Wi‑Fi mode)
+
+A board provisioned for Wi‑Fi also checks in with the backend on its own:
+`POST /devices/{deviceId}/telemetry` carrying an `X-Device-Token`, and applies
+the commands the response returns (config, power, mode, OTA). That is how the
+app reaches a board it is nowhere near — see [AWS_BACKEND.md](AWS_BACKEND.md).
 
 ## Data flow: reading a battery
 
@@ -119,7 +136,11 @@ swap in mocks that replay canned readings and OTA progress without hardware.
 ## Security notes
 
 - BLE pairing uses Just‑Works by default; enable LE Secure Connections in
-  firmware for production and gate the pin‑config characteristic behind pairing.
+  firmware for production and gate the pin‑config, provisioning and session
+  characteristics behind pairing.
+- Wi‑Fi credentials and the device token are written over BLE once during
+  provisioning and never read back. The backend stores only a SHA‑256 of the
+  device token.
 - Wi‑Fi OTA should run over the board's SoftAP or a trusted LAN; the AWS catalog
   serves firmware over HTTPS with short‑lived S3 presigned URLs and an optional
   SHA‑256 that the app verifies before flashing.

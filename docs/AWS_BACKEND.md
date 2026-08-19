@@ -1,8 +1,12 @@
-# AWS Backend — Firmware Distribution
+# AWS Backend — Firmware Distribution + Device Fleet
 
-The backend is **serverless** and does one job well: store firmware builds and
-serve them to the app securely. Boards are flashed by the phone (BLE/Wi‑Fi), so
-the cloud never talks to a device directly — it is a firmware catalog and CDN.
+The backend is **serverless** and does two jobs: it stores firmware builds and
+serves them to the app securely, and it is the endpoint that Wi‑Fi‑mode boards
+check in with while the phone is nowhere near them.
+
+Boards never hold a Cognito session. They are provisioned over Bluetooth with a
+backend URL and a **device token**, and authenticate with that token on a single
+route. Everything else is JWT‑authorized as before.
 
 ## Overview
 
@@ -56,6 +60,20 @@ the cloud never talks to a device directly — it is a firmware catalog and CDN.
 
 Query pattern: `PK = BOARD#<id>` returns every build for a board, newest first.
 
+## Data model — devices & telemetry
+
+Same table, different partitions. `ttl` expires telemetry history automatically
+(30 days by default).
+
+| Item | PK | SK | Notes |
+|---|---|---|---|
+| Device | `DEVICE#bh-a1b2…` | `META` | owner, name, boardId, `tokenHash`, `reportIntervalSec` |
+| Latest state | `DEVICE#bh-a1b2…` | `STATE` | last reading + `fw`, `ip`, `timestamp` |
+| Reading | `DEVICE#bh-a1b2…` | `TS#2026-08-18T09:14:02Z` | raw/volts/soc/rssi, TTL'd |
+| Queued command | `DEVICE#bh-a1b2…` | `CMD#<iso>` | deleted once delivered |
+
+`GSI1` (`GSI1PK = USER#<sub>`) answers "every device this user owns".
+
 ## REST API
 
 Base URL after deploy: `https://{api-id}.execute-api.{region}.amazonaws.com/prod`
@@ -65,6 +83,29 @@ Base URL after deploy: `https://{api-id}.execute-api.{region}.amazonaws.com/prod
 | `GET` | `/boards/{boardId}/firmware` | JWT | List builds for a board |
 | `GET` | `/firmware/{buildId}` | JWT | Build detail + `downloadUrl` (presigned, 5‑min TTL) |
 | `POST` | `/firmware` | JWT (publisher scope) | Register a new build (used by CI) |
+| `POST` | `/devices/claim` | JWT | Claim a board; returns its device token **once** |
+| `GET` | `/devices` | JWT | The user's devices, latest reading, online state |
+| `GET` | `/devices/{deviceId}` | JWT | One device + recent readings |
+| `POST` | `/devices/{deviceId}/commands` | JWT | Queue work for the next check-in |
+| `DELETE` | `/devices/{deviceId}` | JWT | Release the board |
+| `POST` | `/devices/{deviceId}/telemetry` | **Device token** | Board check-in |
+
+### Claim → provision → check in
+
+```
+ app ──POST /devices/claim───────────────▶ backend   (mints deviceToken, stores its SHA-256)
+ app ──BLE write {ssid, password,
+        backendUrl, deviceToken}────────▶ board     (verifies Wi-Fi, then commits)
+ board ─POST /devices/{id}/telemetry────▶ backend   (every reportIntervalSec, forever)
+        ◀── { nextReportSec, stayAwakeMs, commands[] }
+```
+
+The board is asleep between check-ins, so anything the app wants to change is
+**queued**, not pushed: `setConfig`, `setPower`, `setMode`, `identify`,
+`stayAwake`, `ble`, `ota`. An `ota` command carrying a `buildId` makes the
+Lambda mint the presigned S3 URL itself, so the board pulls firmware directly
+and the phone is never in the path. Full payloads in
+[DEVICE_PROTOCOL.md](DEVICE_PROTOCOL.md) §5.
 
 Example — list builds:
 
@@ -157,3 +198,8 @@ Lambda (first 1M req/mo free), DynamoDB on‑demand, API Gateway HTTP API
   before it ever reaches the board.
 - Least‑privilege IAM: the Lambda role can only `GetObject`/`PutObject` on the
   firmware prefix and read/write the one DynamoDB table.
+- Device tokens are random 24‑byte values, stored only as SHA‑256, and scoped to
+  a single device's telemetry path. Re‑claiming a board rotates its token.
+- The telemetry route is the one unauthenticated‑by‑JWT route in the API; it
+  rejects any request whose token hash does not match the claimed device, and a
+  board that was never claimed gets a 404 rather than a stored reading.
