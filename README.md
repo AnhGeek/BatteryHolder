@@ -94,19 +94,23 @@ The app talks to a small contract (a BLE GATT service, a Wi‑Fi HTTP API, and a
 cloud check-in), so a board needs [`firmware/battery_holder_node`](firmware/) on
 it before there is anything to connect to. Two ways to get it there:
 
-- **From the Android app, over USB** — pick your board, set the pins, tap
-  **Generate BIN file** and then **Flash board over USB** with the board on an
-  OTG cable. The app ships the images and writes your calibration into flash at
-  the same time. Re-run [`tools/build_firmware.py`](tools/build_firmware.py)
-  whenever you change a sketch.
+- **From the Android app, over USB** — pick your board, set the pins, choose how
+  it should report and how often, then tap **Generate BIN file** and **Flash
+  board over USB** with the board on an OTG cable. The app ships the images and
+  writes your whole configuration into flash at the same time. Re-run
+  [`tools/build_firmware.py`](tools/build_firmware.py) whenever you change a
+  sketch.
 - **From a workstation** — `arduino-cli compile` / `upload` as usual.
 
 After either route, all further updates can go over the air.
 
-A freshly flashed board comes up in **pairing mode** — no Wi‑Fi credentials are
-compiled in. The app finds it over Bluetooth, asks how it should report
-(Bluetooth-only or Wi‑Fi + cloud), and sends the Wi‑Fi password over the BLE
-link. See [docs/DEVICE_PROTOCOL.md](docs/DEVICE_PROTOCOL.md).
+**Flash, reset, done.** The image carries the run mode, the wake timer and any
+Wi‑Fi credentials in a flash region outside the program, so the board applies
+them on its first boot and comes up already set up — no second pass over
+Bluetooth. Scanning from the Devices tab is how you find a running board to
+*change* it. A board only lands in **pairing mode**, waiting to be claimed over
+Bluetooth, if it was flashed with "Decide later" or its pairing button was held.
+See [docs/DEVICE_PROTOCOL.md](docs/DEVICE_PROTOCOL.md).
 
 ## Documentation
 

@@ -45,8 +45,8 @@ static final session      = Guid('A1B2C3D4-0009-4A5B-8C6D-000000000000');
 ### 2.2 Parse the advertisement
 
 The scan result now carries battery + pairing state in manufacturer data
-(company `0xFFFF`), so the device list can show a battery pill and a
-"Needs setup" badge before connecting. `DiscoveredDevice` should gain:
+(company `0xFFFF`), so the device list can show a battery pill and an
+"Unclaimed" badge before connecting. `DiscoveredDevice` should gain:
 
 ```dart
 final bool provisioned;   // flags & 0x01
@@ -160,6 +160,15 @@ New model `CloudDevice`: `deviceId`, `name`, `boardId`, `transport`,
 
 ## 4. The setup flow (this is the Tuya flow)
 
+> **Superseded as the default path.** A board is set up *before* it is flashed:
+> the Configuration screen asks for the run mode, the wake timer and any Wi-Fi
+> credentials, and they travel in the calibration region (DEVICE_PROTOCOL.md §6)
+> so the board applies them on its first boot and advertises as provisioned.
+> Flash → reset → done. The wizard below is the fallback for a board that
+> genuinely has no mode: one flashed with "Decide later", one whose pairing
+> button was held, or one somebody else flashed. Scanning is otherwise how you
+> find a running board to *change* it, not how you bring one up.
+
 One wizard, five steps, from the device list's "Add board":
 
 1. **Scan** — BLE scan, list boards, highlight ones advertising the pairing flag.
@@ -211,7 +220,7 @@ Per-row state, in priority order:
 | Reporting | `online == true` | "Reporting · 3.94 V · 4 min ago" |
 | Asleep | claimed, `lastSeen` within a few cycles | "Asleep · last seen 12 min ago" |
 | Silent | `lastSeen` older than ~3 cycles | "Not reporting since 09:14" |
-| Needs setup | advertising with `provisioned == false` | "Needs setup" |
+| Unclaimed | advertising with `provisioned == false` | "Unclaimed" — rare, since the image claims the board |
 
 **Never render a sleeping board as an error.**
 
@@ -243,8 +252,10 @@ Reads/writes the power block (DEVICE_PROTOCOL.md §4) over BLE (via the
 provisioning payload's `power` field) or over the cloud (`setPower` command).
 Expose in plain language:
 
-- **Reporting interval** — `wifiReportSec` / `bleWakeSec`, as a picker
-  (1 / 5 / 15 / 60 min), with an honest battery-life hint.
+- **Reporting interval** — `wifiReportSec` / `bleWakeSec`, as a picker over
+  `PowerConfig.intervalOptions` (30 s → 24 h), with an honest battery-life hint.
+  The Configuration screen offers the same twelve values before the flash: a
+  board must never hold an interval its own settings screen cannot show back.
 - **Keep awake while I'm using the app** — `sleepEnabled`, defaulted on.
 - **Advanced** — `bleWindowMs`, `bleIdleMs`, `wifiWindowMs`, `bleInWifi`.
 

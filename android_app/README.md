@@ -61,22 +61,30 @@ the chip's own ROM bootloader.
 
 The flow, end to end:
 
-1. **Setup → Configure** — pick the ADC pin, divider and pack.
+1. **Setup → Configure** — pick the ADC pin, divider and pack, then say how the
+   board should report (Bluetooth / Wi-Fi / decide later), how often it wakes,
+   and — for Wi-Fi — which network to join. That is the whole setup; there is no
+   second pass over Bluetooth.
 2. **Generate BIN file** — assembles the bundled images plus a calibration image
-   built from those settings, writes the calibration out as a real `.bin`, and
-   opens the Flash tab.
+   built from *all* of those settings, writes the calibration out as a real
+   `.bin`, and opens the Flash tab.
 3. **Flash board over USB** — resets the board into download mode, blanks its
    saved settings, writes bootloader / partition table / boot select / app, and
    drops the calibration into its own flash region (DEVICE_PROTOCOL.md §6).
    Then it reads every image back off the board and compares checksums, and
    **stops there**, with the board still parked in its ROM bootloader.
 4. **Reboot and confirm** — an explicit second step, offered only after every
-   image verified. It pulses EN, then hands the same calibration over the serial
-   console (§7) and reads it back.
-5. With **Set to Bluetooth mode** left on, the same console call the BLE
-   provisioning characteristic uses claims the board there and then, so it
-   leaves the cable already set up. Turn it off for a Wi-Fi board: those need
-   the Devices tab, which is where the network password is asked for.
+   image verified. It pulses EN and reads back over the serial console (§7) what
+   the board came up as. Unplugging the board instead does the same thing
+   without the read-back.
+
+The run mode and the wake timer are in the image, not in a follow-up command.
+That is deliberate, and it is what fixes the old flow: the mode used to be set
+by a console call issued *after* the reset in step 4, and on a board with native
+USB that reset takes the port down — so the call routinely never landed, the app
+reported success anyway, and the board turned up in the Devices tab asking to be
+set up all over again. `applyCalibRegion()` now folds the mode into NVS on the
+boot in step 4, before the board ever advertises.
 
 Why the split: a reset is the only irreversible step. Nothing is allowed to run
 until the flash has been proven correct, so a run that goes wrong leaves a board
@@ -137,13 +145,14 @@ self-initiated disconnect as normal rather than as errors
 | Piece | Where |
 |---|---|
 | `provisioning` / `status` / `session` characteristics | [ble_manager.dart](lib/services/ble_manager.dart) `BLEUUID` |
-| Advertisement decode (battery, flags, "needs setup") | `DiscoveredDevice.fromScan` |
+| Advertisement decode (battery, flags, "unclaimed") | `DiscoveredDevice.fromScan` |
 | `DeviceStatus`, `RunMode`, `PowerConfig` | [device_status.dart](lib/models/device_status.dart) |
 | `ConnectionStatus.sleeping` | `BLEManager._handleStatusPayload` |
 | `stayAwake` / `sleepNow` / `factoryReset` / `setMode` / `forgetWifi` / `identify` | `BLEManager` §2.4 block |
 | `withAwakeBoard` wrapper (wraps OTA, config writes, Power writes) | `BLEManager.withAwakeBoard` |
 | Screen-scoped awake contract | [board_awake_mixin.dart](lib/features/board_awake_mixin.dart) |
-| Setup wizard (connect → mode → Wi-Fi → done) | [board_setup_wizard.dart](lib/features/setup/board_setup_wizard.dart) |
+| Claim an unclaimed board (connect → mode → Wi-Fi → done) | [board_setup_wizard.dart](lib/features/setup/board_setup_wizard.dart) |
+| Run mode + wake timer baked into the image | [board_setup.dart](lib/models/board_setup.dart) |
 | Board settings screen (the power block, §4) | [power_view.dart](lib/features/power/power_view.dart) |
 | Poll-failure backoff / "asleep" inference | `WiFiOTAService.reachability` |
 
