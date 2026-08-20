@@ -1,0 +1,19 @@
+# BatteryHolder partition table — 4 MB flash, two OTA app slots plus a
+# calibration region the phone writes over USB before the board has ever run.
+#
+# Identical to the core's "Minimal SPIFFS (1.9MB APP with OTA)" scheme except
+# that the first sector of the SPIFFS area is carved out as `calib`. Keeping
+# app0/app1 at their stock offsets and sizes means an image built for
+# min_spiffs still fits, and the app-size check in the FQBN still applies.
+#
+# The Arduino ESP32 core copies a sketch-local partitions.csv over the scheme
+# selected in the FQBN, so simply compiling this folder picks the table up.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x1E0000,
+app1,       app,  ota_1,    0x1F0000, 0x1E0000,
+calib,      data, 0x40,     0x3D0000, 0x1000,
+spiffs,     data, spiffs,   0x3D1000, 0x1F000,
+coredump,   data, coredump, 0x3F0000, 0x10000,

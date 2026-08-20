@@ -2,7 +2,13 @@
 
 This is the authoritative contract between the firmware in [`firmware/`](../firmware),
 the mobile apps (iOS + Flutter), and the backend in [`backend/`](../backend).
-Firmware `2.0.0` implements all of it.
+Firmware `2.1.0` implements all of it.
+
+One thing the radio contract cannot cover: a board that has never been set
+up. It has no pairing, no credentials and an empty NVS, so the very first
+conversation happens over the USB cable — §6 (the calibration region the
+phone writes into flash while flashing the firmware) and §7 (the serial
+console, which mirrors §2 command for command).
 
 The shape is deliberately the same as a Tuya-style device: **Bluetooth is how
 you set the device up and how you talk to it locally; Wi-Fi is how the cloud
@@ -127,6 +133,7 @@ One JSON object, readable at any time and notified on every state change:
 {
   "ev": "wifi", "detail": "connected",
   "id": "bh-a1b2c3d4e5f6", "fw": "2.0.0", "mode": "wifi", "prov": true,
+  "name": "Garage pack", "auto": "BH-e5f6",
   "raw": 2731, "volts": 3.94, "soc": 78, "boot": 42,
   "wifi": "online", "ip": "192.168.1.42", "rssi": -56,
   "ssid": "home-2g", "cloud": true, "led": true,
@@ -142,6 +149,17 @@ One JSON object, readable at any time and notified on every state change:
 - `sleepInMs` is the milliseconds left in this wake, or `-1` when sleeping is
   disabled/blocked. **The app should treat `sleeping` as an expected
   disconnect, not an error.**
+- `name` is what the board advertises; the automatic `BH-xxxx` is derivable
+  from `id`, so it is not sent. Which GPIO the LED and button are on lives in
+  the config object, not here.
+
+**This object must fit one notification.** A notification carries `MTU - 3`
+bytes and is truncated without warning past that — the app's JSON parse then
+fails and an event the provisioning handshake is waiting on simply never
+arrives. The firmware asks for a 517-byte MTU and the apps request 512, but a
+client that negotiates low must **read** the characteristic rather than rely on
+being notified: reads use ATT_READ_BLOB and have no such limit. The Flutter app
+polls the read during provisioning for exactly this reason.
 
 ### 2.4 Session characteristic (`…-0009-…`)
 
@@ -277,7 +295,122 @@ Sleeping boards are offline most of the time by design. `GET /devices` reports
 and always returns `lastSeen`. The UI should say "last seen 6 min ago", not
 "disconnected".
 
-## 6. Security notes
+## 6. Calibration region
+
+The phone flashes a board over USB before that board has any way to be talked
+to. The ADC pin, divider and calibration factor therefore cannot arrive over the
+air — they are written straight into a flash region **outside the program
+image**, in the same USB session that writes the firmware.
+
+| Chip | Where | How it is found |
+|---|---|---|
+| ESP32 / C3 / S3 | `calib` partition, type `data`, subtype `0x40` (4 KB at `0x3D0000` in [`partitions.csv`](../firmware/battery_holder_node/partitions.csv)) | `esp_partition_find_first()`, or a raw offset via `-DCALIB_FLASH_OFFSET` |
+| ESP8266 | the 4 KB sector below `_EEPROM_start` | the same linker symbol the build script reads out of the ELF |
+
+Layout, little-endian:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | magic `"BHCB"` |
+| 4 | 2 | format version (`1`) |
+| 6 | 2 | flags (reserved, `0`) |
+| 8 | 4 | payload length |
+| 12 | 4 | CRC-32 (IEEE) of the payload |
+| 16 | N | UTF-8 JSON: a `PinConfiguration` plus `"stamp"` |
+
+```json
+{ "boardId": "esp32-wroom", "batteryPinId": "gpio34", "adcResolutionBits": 12,
+  "adcRefVoltage": 3.3, "dividerR1KOhm": 100, "dividerR2KOhm": 100,
+  "calibrationFactor": 1.0, "sampleIntervalMs": 1000, "chemistry": "lipo",
+  "cellCount": 1, "deviceName": "Garage pack", "statusLedPin": 2,
+  "statusLedActiveLow": false, "wakeButtonPin": 0, "stamp": 1755600000 }
+```
+
+Beyond the sensing chain, three things about the board itself travel here,
+because all three were compiled-in guesses that are wrong on real hardware:
+
+| Key | Meaning | Absent means |
+|---|---|---|
+| `deviceName` | What the board advertises and answers to. Max 24 chars — a scan response is 31 bytes. | The board names itself `BH-xxxx` from the last four hex digits of its MAC |
+| `statusLedPin` | GPIO the IDENTIFY LED is on; `-1` for a board with none | Keep the compiled-in default |
+| `statusLedActiveLow` | `true` when the LED sinks through the pin | Keep the compiled-in default |
+| `wakeButtonPin` | GPIO of the pairing button; `-1` for none | Keep the compiled-in default |
+
+An **absent** key and `-1` are different answers: absent leaves the firmware's
+own default alone, `-1` says this board genuinely has no such pin. The board
+refuses a `wakeButtonPin` it could not actually wake from deep sleep on, rather
+than accepting one that would silently never work.
+
+The same keys are accepted on every transport that carries a `PinConfiguration`
+— the BLE config characteristic, `POST /api/config`, and the serial console —
+so a board can be renamed or rewired without reflashing anything.
+
+The firmware reads the region **before its first sample**, on every boot. It
+applies the payload only when `stamp` differs from the one mirrored in NVS, so a
+board reconfigured later over Bluetooth keeps the newer settings instead of
+being dragged back to what was flashed months ago. A region with the wrong
+magic, an unknown version or a failed CRC is ignored outright — the board falls
+back to its compiled-in defaults rather than half-applying anything.
+
+Reflashing the app never touches the region. Blanking NVS (which the app does by
+default, so a reflashed board behaves like a new one) makes the board apply it
+again on the next boot.
+
+## 7. Serial console (USB)
+
+The USB twin of §2: same operations, same JSON, over the cable. This is how a
+freshly flashed board is calibrated and verified, and it works on hardware with
+no radio link of any kind.
+
+**Framing.** 115200 8N1, one JSON object per line, each direction. Every line
+the board means for the app carries `"bh":1`; its human-readable boot log does
+not, so a serial terminal and the app can share the port.
+
+```text
+phone -> board   {"cmd":"config","config":{ …PinConfiguration }}
+board -> phone   {"bh":1,"re":"config","ok":true}
+board -> phone   {"bh":1,"ev":"config", …status fields}
+```
+
+Replies carry `re` (the command they answer) and `ok`. Events carry `ev` and the
+same fields as §2.3 — the status stream is pushed to the cable whenever a
+session is open, exactly as it is notified over BLE.
+
+| `cmd` | Arguments | Effect |
+|---|---|---|
+| `hello` / `status` | — | The §2.3 status object |
+| `getconfig` | — | Current `PinConfiguration` |
+| `config` | `config` | Apply and persist sensing settings |
+| `calib` | `config`, `stamp` | Apply **and** write the §6 flash region |
+| `getcalib` | — | Read the region back: `region`, `size`, `calib` |
+| `getpower` / `power` | `power` | The §4 power block (ESP32) |
+| `prov` | `mode`, `ssid`, `password`, `backendUrl`, `deviceToken` | The §2.2 provisioning payload, same code path |
+| `session` | `op`: `stayAwake` · `sleep` · `identify` · `setMode` · `forgetWifi` · `factoryReset` | The §2.4 session commands |
+
+A board with a serial session open will not deep sleep for 60 s after the last
+command — the cable counts as engagement the same way a subscribed BLE client
+does.
+
+### 7.1 Boards with native USB
+
+On the ESP32-C3/S3/C6 the USB port is the chip itself (`303a:1001`, "USB
+JTAG/serial debug unit"), not a separate bridge chip. Two consequences shape the
+contract:
+
+- **Deep sleep takes the USB device down with it.** The peripheral is not in the
+  RTC power domain, so a sleeping board *detaches* from the host: the port
+  disappears, an open session dies mid-sentence, and it only comes back on the
+  next wake. The firmware therefore refuses to sleep at all while a USB host has
+  the port open (`usb: true` in the status object). A board on a cable is a board
+  someone is working on, and it is running on that host's power.
+- **`Serial` has to be the USB port.** These builds set `CDCOnBoot`, which maps
+  `Serial` to the native USB CDC and moves UART0 to `Serial0`. The console reads
+  and answers on *both*, because the phone may be plugged into either.
+
+The ROM bootloader never sleeps, so once a board is in download mode it stays
+reachable regardless.
+
+## 8. Security notes
 
 - The device token is a bearer credential on a single device path; it is
   transported over an encrypted BLE link only during provisioning and stored

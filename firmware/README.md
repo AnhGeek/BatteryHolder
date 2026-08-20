@@ -4,8 +4,12 @@ Firmware that implements the BatteryHolder device contract so the apps have a
 real board to talk to. Flash it once over USB; after that the app — or the
 backend — can update it over the air.
 
-Current version: **2.0.0**. The full contract lives in
+Current version: **2.1.0**. The full contract lives in
 [../docs/DEVICE_PROTOCOL.md](../docs/DEVICE_PROTOCOL.md).
+
+Flashing it is no longer a workstation job either: the Android app ships these
+images as assets and writes them over the phone's USB port. See
+[Building the images the app ships](#building-the-images-the-app-ships).
 
 ## Sketches
 
@@ -46,14 +50,66 @@ BLE, WebServer, mDNS, HTTPClient and Update come with the ESP cores.
 
 ## Partition scheme
 
-BLE + Wi-Fi + WebServer + mDNS + Update in one image is ~1.5 MB, which does not
+BLE + Wi-Fi + WebServer + mDNS + Update in one image is ~1.9 MB, which does not
 fit the Arduino default (1.2 MB app). Pick **Minimal SPIFFS (1.9MB APP with
 OTA/128KB SPIFFS)** — the "No OTA" and "Huge APP" schemes are the wrong trade
-here because the firmware's own OTA needs two app slots.
+here because the firmware's own OTA needs two app slots. The app currently uses
+96 % of that slot, so there is not much headroom left for new features.
+
+The ESP32 sketch folder carries its own
+[`partitions.csv`](battery_holder_node/partitions.csv), and the Arduino core
+copies a sketch-local table over whatever the FQBN selected. It is the
+min_spiffs layout with one change: the first SPIFFS sector is carved out as a
+4 KB `calib` partition, which is where the phone writes the calibration when it
+flashes a board over USB (DEVICE_PROTOCOL.md §6).
 
 ```bash
 arduino-cli compile   --fqbn "esp32:esp32:esp32c3:PartitionScheme=min_spiffs"   firmware/battery_holder_node
 ```
+
+## Building the images the app ships
+
+The Android app embeds prebuilt `.bin` files — it never compiles anything on the
+phone. [`tools/build_firmware.py`](../tools/build_firmware.py) is what produces
+them: it compiles one image set per board in `boards.json`, reads the flash
+offsets out of the core's own build output, finds the calibration region in the
+built partition table (or, on ESP8266, from `_EEPROM_start` in the ELF), and
+writes everything plus a `manifest.json` into
+`android_app/assets/firmware/<boardId>/`.
+
+```bash
+python tools/build_firmware.py            # every board
+python tools/build_firmware.py --check    # what would be built
+```
+
+Re-run it after any change to a sketch or to `partitions.csv`, then rebuild the
+app so the new images ship with it.
+
+## Talking to a board over the cable
+
+A board fresh off the reel has no pairing and no credentials, so both sketches
+expose a serial console: one JSON object per line at 115200 baud, carrying the
+same commands the BLE service does (DEVICE_PROTOCOL.md §7). It is what the app
+uses to confirm a calibration after flashing, and it is equally usable from a
+plain serial monitor:
+
+```json
+{"cmd":"status"}
+{"cmd":"getcalib"}
+{"cmd":"config","config":{"batteryPinId":"gpio34","dividerR1KOhm":100,"dividerR2KOhm":100}}
+{"cmd":"session","op":"identify"}
+```
+
+Lines the board means for the app carry `"bh":1`; the boot log does not, so both
+can share the port.
+
+On the ESP32-C3/S3 the USB socket is the chip itself rather than a bridge, so
+the build sets `CDCOnBoot=cdc`: `Serial` becomes that USB port and UART0 moves to
+`Serial0`. The console services both. Those parts also lose their USB device
+entirely in deep sleep — the port vanishes from the host — so the firmware stays
+awake for as long as a USB host holds the port open, and reports `usb: true`
+while it does. A charger never enumerates, so a board in the field still sleeps
+normally.
 
 ## Board-specific pins
 
@@ -92,7 +148,7 @@ network is gone for good.
 
 With R1 = R2 = 100 kΩ the divider halves the voltage, so a 1S LiPo (max 4.2 V)
 reaches ~2.1 V at the pin — safely under the 3.3 V ADC limit. Enter your real R1
-and R2 in the app's Pin configuration screen.
+and R2 on the app's Configuration screen.
 
 ## Wiring (power features)
 

@@ -13,6 +13,11 @@
 // Deep sleep needs GPIO16 (D0) wired to RST, otherwise the board never wakes.
 // Set SLEEP_WIRED to 0 if that link is absent and the board should stay awake.
 //
+// A board fresh off the reel is reached over the USB cable instead: the phone
+// flashes this sketch over UART, writes the calibration into a flash sector
+// outside the program image, and can drive the same commands over a
+// JSON-per-line serial console that the SoftAP portal exposes over HTTP.
+//
 // Libraries: ArduinoJson (v6). WebServer / mDNS / Update / HTTPClient ship with
 // the ESP8266 core.
 
@@ -25,7 +30,7 @@
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 
-static const char* FW_VERSION = "2.0.0";
+static const char* FW_VERSION = "2.1.0";
 static const char* HOSTNAME   = "batteryholder";
 
 // D0 (GPIO16) tied to RST? Deep sleep only works if it is.
@@ -55,7 +60,18 @@ enum Mode : uint8_t { MODE_PAIRING = 0, MODE_BLE = 1 /* unused here */, MODE_WIF
 // ---- Persisted configuration (EEPROM blob) ----
 struct Config {
   uint32_t magic = 0x42484C44;   // "BHLD"
-  uint8_t  version = 2;
+  uint8_t  version = 5;          // bumped when the board name moved in here
+
+  // What to call this board. Empty means "use the MAC-derived one".
+  char name[25]     = {0};
+
+  // Board wiring. The macros above are only defaults: which GPIO the LED is on,
+  // whether it sinks, and where the pairing button is are properties of the
+  // board in front of you, not of the image. The app can correct them, and they
+  // travel in the calibration region (DEVICE_PROTOCOL.md 6).
+  int  ledPin       = STATUS_LED_PIN;
+  bool ledActiveLow = STATUS_LED_ACTIVE_LOW;
+  int  buttonPin    = PAIR_BUTTON_PIN;
 
   int   adcResBits    = 10;      // ESP8266 ADC is 10-bit
   float adcRefVoltage = 3.3f;    // NodeMCU onboard divider -> ~3.3V full scale
@@ -76,6 +92,11 @@ struct Config {
   char pass[65]       = {0};
   char backendUrl[97] = {0};
   char token[97]      = {0};
+
+  // Stamp of the calibration region already folded into the fields above, so a
+  // board reconfigured later over Wi-Fi is not dragged back to what was
+  // flashed months ago.
+  uint32_t calibStamp = 0;
 } cfg;
 
 static const uint32_t PAIRING_WINDOW_MS = 300000;   // 5 min AP window
@@ -92,8 +113,10 @@ int      lastRaw = 0;
 float    lastVolts = 0.0f;
 
 // IDENTIFY blink, driven from loop() so the HTTP handler can answer at once.
-static const int kStatusLedPin = STATUS_LED_PIN;
-static const uint32_t BLINK_MS = 150;
+// Slow enough to count from across a room: IDENTIFY answers "which of these
+// boards is the one I am looking at", and anything quicker reads as a flicker
+// rather than as this board deliberately signalling.
+static const uint32_t BLINK_MS = 700;
 uint8_t  blinkEdgesLeft = 0;
 uint32_t blinkNextAt = 0;
 bool     blinkOn = false;
@@ -106,9 +129,15 @@ String deviceId() {
   return String(buf);
 }
 
-String shortName() {
+// The automatic name: BH- plus the last four hex digits of the chip id.
+String autoName() {
   String id = deviceId();
   return "BH-" + id.substring(id.length() - 4);
+}
+
+// What this board calls itself, and what its pairing AP is called.
+String deviceName() {
+  return cfg.name[0] ? String(cfg.name) : autoName();
 }
 
 float dividerRatio() { return (cfg.r1KOhm + cfg.r2KOhm) / cfg.r2KOhm; }
@@ -137,12 +166,12 @@ bool provisioned()  { return cfg.mode == MODE_WIFI; }
 bool hasWifiCreds() { return cfg.ssid[0] != 0; }
 bool hasCloud()     { return cfg.backendUrl[0] != 0 && cfg.token[0] != 0; }
 
-bool hasStatusLed() { return kStatusLedPin >= 0; }
+bool hasStatusLed() { return cfg.ledPin >= 0; }
 
 void ledWrite(bool on) {
   if (!hasStatusLed()) return;
-  bool level = STATUS_LED_ACTIVE_LOW ? !on : on;
-  digitalWrite(kStatusLedPin, level ? HIGH : LOW);
+  bool level = cfg.ledActiveLow ? !on : on;
+  digitalWrite(cfg.ledPin, level ? HIGH : LOW);
 }
 
 void extendWake(uint32_t ms) {
@@ -152,7 +181,7 @@ void extendWake(uint32_t ms) {
 
 void startIdentify(uint8_t pulses = 6) {
   if (!hasStatusLed()) return;
-  pinMode(kStatusLedPin, OUTPUT);
+  pinMode(cfg.ledPin, OUTPUT);
   blinkEdgesLeft = pulses * 2;
   blinkNextAt = millis();
   blinkOn = false;
@@ -209,6 +238,23 @@ bool applyConfigJson(const String& body) {
   if (doc.containsKey("sampleIntervalMs"))  cfg.sampleMs      = doc["sampleIntervalMs"];
   if (doc.containsKey("cellCount"))         cfg.cellCount     = doc["cellCount"];
   if (doc.containsKey("chemistry"))         applyChemistry(doc["chemistry"].as<String>());
+
+  // An empty name hands the board back to its automatic MAC-derived one.
+  if (doc.containsKey("deviceName")) {
+    strlcpy(cfg.name, doc["deviceName"] | "", sizeof(cfg.name));
+  }
+
+  // Board wiring. -1 means "this board has none", a real answer for both.
+  if (doc.containsKey("statusLedPin")) {
+    int pin = doc["statusLedPin"];
+    if (pin >= -1 && pin <= 16) cfg.ledPin = pin;
+  }
+  if (doc.containsKey("statusLedActiveLow")) cfg.ledActiveLow = doc["statusLedActiveLow"];
+  if (doc.containsKey("wakeButtonPin")) {
+    int pin = doc["wakeButtonPin"];
+    if (pin >= -1 && pin <= 16) cfg.buttonPin = pin;
+  }
+
   saveConfig();
   return true;
 }
@@ -223,6 +269,10 @@ String configJson() {
   doc["calibrationFactor"] = cfg.calibration;
   doc["sampleIntervalMs"]  = cfg.sampleMs;
   doc["cellCount"]         = cfg.cellCount;
+  doc["deviceName"]         = String(cfg.name);
+  doc["statusLedPin"]       = cfg.ledPin;
+  doc["statusLedActiveLow"] = cfg.ledActiveLow;
+  doc["wakeButtonPin"]      = cfg.buttonPin;
   String out; serializeJson(doc, out); return out;
 }
 
@@ -235,13 +285,114 @@ bool applyPowerJson(JsonObjectConst o) {
   return true;
 }
 
+// ------------------------------------------------------ calibration region ---
+//
+// Same 16-byte header + JSON payload the ESP32 sketch uses
+// (DEVICE_PROTOCOL.md 6). The ESP8266 has no partition table, so the region is
+// the flash sector immediately below the one the EEPROM library claims - the
+// last sector of the filesystem area, which this sketch never touches. The
+// build script reads `_EEPROM_start` out of the same ELF, so the phone writes
+// exactly where the firmware reads.
+
+extern "C" uint32_t _EEPROM_start;
+
+static const uint32_t CALIB_MAGIC       = 0x42434842UL;   // "BHCB", LE
+static const uint16_t CALIB_VERSION     = 1;
+static const size_t   CALIB_HEADER_SIZE = 16;
+static const size_t   CALIB_MAX_PAYLOAD = 1024;
+
+uint32_t calibOffset() {
+  return ((uint32_t)&_EEPROM_start - 0x40200000) - SPI_FLASH_SEC_SIZE;
+}
+
+uint32_t crc32Buf(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFUL;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int b = 0; b < 8; b++) {
+      crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320UL : 0);
+    }
+  }
+  return ~crc;
+}
+
+bool readCalibRegion(String& payload) {
+  uint32_t base = calibOffset();
+  uint32_t head[CALIB_HEADER_SIZE / 4];
+  if (!ESP.flashRead(base, head, sizeof(head))) return false;
+
+  uint32_t magic = head[0];
+  uint16_t ver   = (uint16_t)(head[1] & 0xFFFF);
+  uint32_t len   = head[2];
+  uint32_t crc   = head[3];
+  if (magic != CALIB_MAGIC || ver != CALIB_VERSION) return false;
+  if (len == 0 || len > CALIB_MAX_PAYLOAD) return false;
+
+  size_t padded = (len + 3) & ~(size_t)3;
+  uint8_t* buf = (uint8_t*)malloc(padded + 1);
+  if (!buf) return false;
+  bool ok = ESP.flashRead(base + CALIB_HEADER_SIZE, (uint32_t*)buf, padded) &&
+            crc32Buf(buf, len) == crc;
+  if (ok) {
+    buf[len] = 0;
+    payload = String((const char*)buf);
+  }
+  free(buf);
+  return ok;
+}
+
+// Lets a calibration that arrived over Wi-Fi survive a later reflash, the same
+// way the one the phone wrote over USB does.
+bool writeCalibRegion(const String& payload) {
+  size_t len = payload.length();
+  if (len == 0 || len > CALIB_MAX_PAYLOAD) return false;
+
+  size_t padded = (len + 3) & ~(size_t)3;
+  size_t total  = CALIB_HEADER_SIZE + padded;
+  uint8_t* buf = (uint8_t*)calloc(total, 1);
+  if (!buf) return false;
+
+  uint32_t* words = (uint32_t*)buf;
+  words[0] = CALIB_MAGIC;
+  words[1] = CALIB_VERSION;        // low half version, high half flags (0)
+  words[2] = (uint32_t)len;
+  words[3] = crc32Buf((const uint8_t*)payload.c_str(), len);
+  memcpy(buf + CALIB_HEADER_SIZE, payload.c_str(), len);
+
+  uint32_t base = calibOffset();
+  bool ok = ESP.flashEraseSector(base / SPI_FLASH_SEC_SIZE) &&
+            ESP.flashWrite(base, (uint32_t*)buf, total);
+  free(buf);
+  return ok;
+}
+
+// Applied at boot, before the first sample: on a board that has never been
+// provisioned this is the only description of the hardware there is.
+void applyCalibRegion() {
+  String payload;
+  if (!readCalibRegion(payload)) return;
+
+  StaticJsonDocument<640> doc;
+  if (deserializeJson(doc, payload)) return;
+  uint32_t stamp = doc["stamp"] | 0UL;
+  if (stamp != 0 && stamp == cfg.calibStamp) return;   // already in EEPROM
+
+  if (!applyConfigJson(payload)) return;
+  if (doc.containsKey("power")) applyPowerJson(doc["power"].as<JsonObjectConst>());
+  cfg.calibStamp = stamp;
+  saveConfig();
+  Serial.printf("[calib] applied stamp=%u\n", stamp);
+}
+
 // Same shape as the ESP32's BLE status characteristic, so the app can reuse
 // one parser for both transports.
 String statusJson(const char* event = nullptr, const char* detail = nullptr) {
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<416> doc;
+  doc["bh"] = 1;                  // marks the lines the app is meant to read
   if (event)  doc["ev"] = event;
   if (detail) doc["detail"] = detail;
   doc["id"]    = deviceId();
+  doc["name"]  = deviceName();
   doc["fw"]    = FW_VERSION;
   doc["mode"]  = runMode == MODE_WIFI ? "wifi" : "pairing";
   doc["prov"]  = provisioned();
@@ -255,7 +406,7 @@ String statusJson(const char* event = nullptr, const char* detail = nullptr) {
   }
   if (hasWifiCreds()) doc["ssid"] = cfg.ssid;
   doc["cloud"] = hasCloud();
-  doc["led"]   = hasStatusLed();
+  doc["led"]   = hasStatusLed();     // which pin is in configJson
   int32_t left = (int32_t)(stayAwakeUntil - millis());
   doc["sleepInMs"]   = (!cfg.sleepEnabled || sleepBlocked) ? -1 : (left < 0 ? 0 : left);
   doc["nextWakeSec"] = cfg.reportSec;
@@ -386,15 +537,11 @@ void handleVoltage() {
   server.send(200, "application/json", out);
 }
 
-// The SoftAP twin of the ESP32's BLE provisioning characteristic. Same JSON.
-void handleProvision() {
-  StaticJsonDocument<512> doc;
-  if (deserializeJson(doc, server.arg("plain"))) {
-    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}");
-    return;
-  }
+// Credentials in; the radio dance is a separate step so the HTTP handler can
+// answer the client before the AP goes away, and the serial console can run
+// the same two halves with no HTTP request at all.
+void applyProvisionJson(JsonDocument& doc) {
   sleepBlocked = true;
-
   if (doc.containsKey("ssid"))        strlcpy(cfg.ssid, doc["ssid"] | "", sizeof(cfg.ssid));
   if (doc.containsKey("password"))    strlcpy(cfg.pass, doc["password"] | "", sizeof(cfg.pass));
   if (doc.containsKey("backendUrl"))  strlcpy(cfg.backendUrl, doc["backendUrl"] | "", sizeof(cfg.backendUrl));
@@ -402,17 +549,9 @@ void handleProvision() {
   if (doc.containsKey("reportIntervalSec")) cfg.reportSec = doc["reportIntervalSec"];
   if (doc.containsKey("power")) applyPowerJson(doc["power"].as<JsonObjectConst>());
   saveConfig();
+}
 
-  // Answer before switching networks — the client is on our AP right now and
-  // loses the socket the moment the radio flips to station mode.
-  StaticJsonDocument<256> res;
-  res["ok"] = true;
-  res["deviceId"] = deviceId();
-  res["next"] = "connecting";
-  String out; serializeJson(res, out);
-  server.send(200, "application/json", out);
-  delay(200);
-
+void completeProvision() {
   WiFi.softAPdisconnect(true);
   if (connectWiFi(20000)) {
     cfg.mode = MODE_WIFI;
@@ -425,6 +564,27 @@ void handleProvision() {
     startPairingAP();
   }
   sleepBlocked = false;
+}
+
+// The SoftAP twin of the ESP32's BLE provisioning characteristic. Same JSON.
+void handleProvision() {
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, server.arg("plain"))) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}");
+    return;
+  }
+  applyProvisionJson(doc);
+
+  // Answer before switching networks — the client is on our AP right now and
+  // loses the socket the moment the radio flips to station mode.
+  StaticJsonDocument<256> res;
+  res["ok"] = true;
+  res["deviceId"] = deviceId();
+  res["next"] = "connecting";
+  String out; serializeJson(res, out);
+  server.send(200, "application/json", out);
+  delay(200);
+  completeProvision();
 }
 
 void handleSession() {
@@ -453,6 +613,166 @@ void handleSession() {
     saveConfig();
   }
   server.send(200, "application/json", statusJson());
+}
+
+// ------------------------------------------------------------ serial link ---
+//
+// The USB twin of the pairing AP: one JSON object per line at 115200 baud, the
+// same commands the SoftAP portal takes over HTTP. It is how the phone talks to
+// a board it has just flashed, before the board has ever joined a network.
+// Lines the board means for the app carry "bh":1; the boot log does not.
+// DEVICE_PROTOCOL.md 7 has the command list.
+
+static const uint32_t SERIAL_SESSION_MS = 60000;
+String   serialLine;
+uint32_t serialActiveUntil = 0;
+
+bool serialAttached() { return (int32_t)(serialActiveUntil - millis()) > 0; }
+
+void serialSend(JsonDocument& doc) {
+  doc["bh"] = 1;
+  String out;
+  serializeJson(doc, out);
+  Serial.println(out);
+}
+
+void serialReply(const char* re, bool ok, const char* detail = nullptr) {
+  StaticJsonDocument<192> doc;
+  doc["re"] = re;
+  doc["ok"] = ok;
+  if (detail) doc["detail"] = detail;
+  serialSend(doc);
+}
+
+void handleSerialLine(const String& line) {
+  StaticJsonDocument<640> req;
+  if (deserializeJson(req, line)) { serialReply("?", false, "bad json"); return; }
+  String cmd = req["cmd"] | "";
+  if (cmd.isEmpty()) return;          // somebody else's JSON, not a command
+
+  serialActiveUntil = millis() + SERIAL_SESSION_MS;
+  extendWake(SERIAL_SESSION_MS);
+
+  if (cmd == "hello" || cmd == "status") {
+    StaticJsonDocument<512> doc;
+    deserializeJson(doc, statusJson());
+    doc["re"] = cmd;
+    doc["ok"] = true;
+    serialSend(doc);
+    return;
+  }
+
+  if (cmd == "getconfig") {
+    StaticJsonDocument<512> doc;
+    deserializeJson(doc, configJson());
+    doc["re"] = "getconfig";
+    doc["ok"] = true;
+    serialSend(doc);
+    return;
+  }
+
+  // "config" applies the settings now; "calib" also burns them into the flash
+  // region, so they outlive the next reflash of the app.
+  if (cmd == "config" || cmd == "calib") {
+    String body;
+    if (req.containsKey("config")) serializeJson(req["config"], body);
+    else body = line;
+
+    if (!applyConfigJson(body)) { serialReply(cmd.c_str(), false, "bad config"); return; }
+
+    if (cmd == "calib") {
+      uint32_t stamp = req["stamp"] | 0UL;
+      StaticJsonDocument<640> doc;
+      deserializeJson(doc, body);
+      doc.remove("cmd");
+      doc["stamp"] = stamp;
+      String stored;
+      serializeJson(doc, stored);
+      if (!writeCalibRegion(stored)) { serialReply("calib", false, "region write failed"); return; }
+      cfg.calibStamp = stamp;
+      saveConfig();
+    }
+    serialReply(cmd.c_str(), true);
+    return;
+  }
+
+  if (cmd == "getcalib") {
+    String payload;
+    bool ok = readCalibRegion(payload);
+    StaticJsonDocument<896> doc;
+    doc["re"]     = "getcalib";
+    doc["ok"]     = ok;
+    doc["region"] = calibOffset();
+    doc["size"]   = (uint32_t)SPI_FLASH_SEC_SIZE;
+    if (ok) {
+      StaticJsonDocument<640> stored;
+      if (!deserializeJson(stored, payload)) doc["calib"] = stored;
+    }
+    serialSend(doc);
+    return;
+  }
+
+  if (cmd == "prov") {
+    applyProvisionJson(req);
+    serialReply("prov", true, "connecting");
+    Serial.flush();
+    completeProvision();
+    StaticJsonDocument<512> doc;
+    deserializeJson(doc, statusJson(wifiOnline ? "prov" : "wifi",
+                                   wifiOnline ? "done" : "failed"));
+    serialSend(doc);
+    return;
+  }
+
+  if (cmd == "session") {
+    String op = req["op"] | "";
+    if (op == "stayAwake") {
+      uint32_t sec = req["seconds"] | 0UL;
+      if (sec == 0) sleepBlocked = true;
+      else { sleepBlocked = false; extendWake(min(sec, (uint32_t)3600) * 1000UL); }
+      serialReply("session", true, "awake");
+    } else if (op == "sleep") {
+      uint32_t sec = req["seconds"] | 0UL;
+      if (sec >= 10) { cfg.reportSec = sec; saveConfig(); }
+      sleepBlocked = false;
+      sleepRequested = true;
+      serialReply("session", true, "sleeping");
+    } else if (op == "identify") {
+      startIdentify();
+      serialReply("session", true, "identify");
+    } else if (op == "forgetWifi") {
+      cfg.ssid[0] = 0; cfg.pass[0] = 0; cfg.mode = MODE_PAIRING;
+      saveConfig();
+      serialReply("session", true, "wifi forgotten");
+    } else if (op == "factoryReset") {
+      serialReply("session", true, "reset");
+      Serial.flush();
+      delay(100);
+      factoryReset();
+      ESP.restart();
+    } else {
+      serialReply("session", false, "unknown op");
+    }
+    return;
+  }
+
+  serialReply(cmd.c_str(), false, "unknown cmd");
+}
+
+void serviceSerial() {
+  while (Serial.available()) {
+    char ch = (char)Serial.read();
+    if (ch == '\r') continue;
+    if (ch != '\n') {
+      if (serialLine.length() < 1024) serialLine += ch;
+      else serialLine = "";           // runaway line: drop it and resync
+      continue;
+    }
+    String line = serialLine;
+    serialLine = "";
+    line.trim();
+    if (line.startsWith("{")) handleSerialLine(line);
+  }
 }
 
 void setupHTTP() {
@@ -486,7 +806,8 @@ void setupHTTP() {
 void startPairingAP() {
   runMode = MODE_PAIRING;
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(shortName().c_str());          // open AP, claim window only
+  // The AP is how the app finds this board, so it carries the board's name.
+  WiFi.softAP(deviceName().substring(0, 24).c_str());   // open, claim window only
   wifiOnline = false;
   stayAwakeUntil = millis() + PAIRING_WINDOW_MS;
 }
@@ -494,12 +815,9 @@ void startPairingAP() {
 // ------------------------------------------------------------- deep sleep ---
 
 bool pairButtonPressed() {
-#if PAIR_BUTTON_PIN >= 0
-  pinMode(PAIR_BUTTON_PIN, INPUT_PULLUP);
-  return digitalRead(PAIR_BUTTON_PIN) == LOW;
-#else
-  return false;
-#endif
+  if (cfg.buttonPin < 0) return false;
+  pinMode(cfg.buttonPin, INPUT_PULLUP);
+  return digitalRead(cfg.buttonPin) == LOW;
 }
 
 void goToSleep(uint32_t seconds) {
@@ -520,6 +838,7 @@ void goToSleep(uint32_t seconds) {
 void maybeSleep() {
   if (sleepRequested) { goToSleep(cfg.reportSec); return; }
   if (!cfg.sleepEnabled || sleepBlocked) return;
+  if (serialAttached()) return;     // a phone is mid-conversation on the cable
   if (otaActive) { extendWake(30000); return; }
   if (blinkEdgesLeft > 0) return;   // finish identifying first
   // An unclaimed board keeps its AP up: nobody can provision a radio that is
@@ -533,6 +852,9 @@ void maybeSleep() {
 void setup() {
   Serial.begin(115200);
   loadConfig();
+  // Whatever the phone burned in over USB outranks the compiled-in defaults,
+  // and it is all a board that has never been provisioned has to go on.
+  applyCalibRegion();
   sampleBattery();
 
   bool forcePairing = pairButtonPressed();
@@ -557,6 +879,7 @@ void setup() {
 unsigned long lastSample = 0;
 
 void loop() {
+  serviceSerial();
   server.handleClient();
   if (wifiOnline) MDNS.update();
   serviceIdentify();

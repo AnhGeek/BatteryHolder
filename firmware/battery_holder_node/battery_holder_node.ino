@@ -11,6 +11,11 @@
 //            telemetry to the backend, obeys the commands it gets back, then
 //            deep sleeps for cfg.wifiReportSec.
 //
+// A board that has never been provisioned is reached over the USB cable
+// instead: the phone flashes this sketch over UART, drops the calibration into
+// a dedicated flash region outside the program image, and can then drive the
+// same commands over a JSON-per-line serial console that Bluetooth exposes.
+//
 // Libraries: ArduinoJson (v6). BLE / WebServer / mDNS / Update / HTTPClient
 // ship with the ESP32 core.
 
@@ -29,9 +34,23 @@
 #include <esp_sleep.h>
 #include <soc/soc_caps.h>
 #include <esp_system.h>
+#include <esp_partition.h>
+#include <esp_flash.h>
+#include <driver/rtc_io.h>
+
+// A build with CDC-on-boot puts Serial on the chip's native USB port and moves
+// UART0 to Serial0. The phone may be plugged into either, so the console reads
+// and answers on both. Parts without native USB (classic ESP32) only have the
+// one, and BH_ALT_SERIAL simply does not exist there.
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+#define BH_USB_CONSOLE 1
+#define BH_ALT_SERIAL Serial0
+#else
+#define BH_USB_CONSOLE 0
+#endif
 
 // ---- Identity ----
-static const char* FW_VERSION = "2.0.0";
+static const char* FW_VERSION = "2.1.0";
 static const char* HOSTNAME   = "batteryholder";
 
 // ---- Hardware ----
@@ -51,6 +70,13 @@ static const char* HOSTNAME   = "batteryholder";
 #define WAKE_BUTTON_PIN -1
 #endif
 #endif
+
+// The two pins below are *defaults*. Both are settable at runtime and travel in
+// the calibration region, because a compiled-in guess about somebody else's dev
+// board is exactly the kind of thing that is wrong in the field: an LED on a
+// different GPIO, one that sinks instead of sources, a pairing button wired
+// somewhere else or not at all. The app can correct all of that without a
+// rebuild (DEVICE_PROTOCOL.md §6).
 
 // Status LED for IDENTIFY. Take whatever the board definition says it has:
 // RGB_BUILTIN is the addressable LED on the C3/S3 DevKitM family, which core
@@ -111,8 +137,23 @@ static const uint32_t USER_WAKE_WINDOW_MS = 120000;
 // ---- Modes ----
 enum Mode : uint8_t { MODE_PAIRING = 0, MODE_BLE = 1, MODE_WIFI = 2 };
 
+// Where the region lives. Normally the `calib` partition; a board built on a
+// stock partition table can still point at a raw sector with
+// -DCALIB_FLASH_OFFSET=0x3D0000.
+struct CalibRegion {
+  uint32_t offset = 0;
+  uint32_t size   = 0;
+  bool     found  = false;
+};
+
 // ---- Persisted configuration ----
 struct Config {
+  // Board wiring. Seeded from the build-time defaults above, then overridden by
+  // whatever the app has told this particular board about itself.
+  int  ledPin       = STATUS_LED_PIN;
+  bool ledActiveLow = STATUS_LED_ACTIVE_LOW;
+  int  buttonPin    = WAKE_BUTTON_PIN;
+
   // Sensing.
   int   adcPin        = DEFAULT_ADC_PIN;
   int   adcResBits    = 12;
@@ -136,6 +177,10 @@ struct Config {
   uint32_t wifiReportSec = 900;    // deep sleep between cloud reports
   uint32_t wifiWindowMs  = 15000;  // stay awake after a report (local OTA)
   bool     bleInWifi     = false;  // keep BLE up in Wi-Fi mode (costs power)
+
+  // What to call this board. Empty means "use the MAC-derived one", which is
+  // what a board that nobody has named answers to.
+  char name[25]       = {0};
 
   // Cloud.
   char ssid[33]       = {0};
@@ -175,8 +220,10 @@ float    lastVolts = 0.0f;
 // IDENTIFY blink, driven from loop() rather than from the BLE callback: the
 // old version slept 720 ms inside the GATT write handler, which stalled the
 // stack long enough for the app's write to time out.
-static const int kStatusLedPin = STATUS_LED_PIN;
-static const uint32_t BLINK_MS = 150;
+// Slow enough to count from across a room: IDENTIFY answers "which of these
+// boards is the one I am looking at", and anything quicker reads as a flicker
+// rather than as this board deliberately signalling.
+static const uint32_t BLINK_MS = 700;
 volatile uint8_t blinkEdgesLeft = 0;   // on/off transitions still to make
 uint32_t blinkNextAt = 0;
 bool     blinkOn = false;
@@ -195,9 +242,17 @@ String deviceId() {
   return String(buf);
 }
 
-String shortName() {
+// The automatic name: BH- plus the last four hex digits of the MAC. Unique
+// enough to tell two boards on a bench apart, and it needs no configuration.
+String autoName() {
   String id = deviceId();
   return "BH-" + id.substring(id.length() - 4);
+}
+
+// What this board calls itself: whatever it was named, otherwise [autoName].
+// This is the name it advertises, so it is what shows up in the app's list.
+String deviceName() {
+  return cfg.name[0] ? String(cfg.name) : autoName();
 }
 
 float dividerRatio() { return (cfg.r1KOhm + cfg.r2KOhm) / cfg.r2KOhm; }
@@ -227,12 +282,20 @@ bool provisioned()  { return cfg.mode != MODE_PAIRING; }
 bool hasWifiCreds() { return cfg.ssid[0] != 0; }
 bool hasCloud()     { return cfg.backendUrl[0] != 0 && cfg.token[0] != 0; }
 
-bool hasStatusLed() { return kStatusLedPin >= 0; }
+bool hasStatusLed() { return cfg.ledPin >= 0; }
 
 void ledWrite(bool on) {
   if (!hasStatusLed()) return;
-  bool level = STATUS_LED_ACTIVE_LOW ? !on : on;
-  digitalWrite(kStatusLedPin, level ? HIGH : LOW);
+  bool level = cfg.ledActiveLow ? !on : on;
+  digitalWrite(cfg.ledPin, level ? HIGH : LOW);
+}
+
+// A pin the chip can actually wake from deep sleep on. Anything else would be
+// accepted silently and then simply never wake the board, which is worse than
+// refusing it.
+bool isWakeCapable(int pin) {
+  if (pin < 0 || pin > 48) return false;
+  return rtc_gpio_is_valid_gpio((gpio_num_t)pin);
 }
 
 void extendWake(uint32_t ms) {
@@ -254,6 +317,12 @@ void loadConfig() {
   cfg.cellCount     = prefs.getInt("cells", cfg.cellCount);
   cfg.cellMinV      = prefs.getFloat("vmin", cfg.cellMinV);
   cfg.cellMaxV      = prefs.getFloat("vmax", cfg.cellMaxV);
+
+  prefs.getString("name", cfg.name, sizeof(cfg.name));
+
+  cfg.ledPin        = prefs.getInt("ledpin", cfg.ledPin);
+  cfg.ledActiveLow  = prefs.getBool("ledlow", cfg.ledActiveLow);
+  cfg.buttonPin     = prefs.getInt("btnpin", cfg.buttonPin);
 
   cfg.mode          = prefs.getUChar("mode", cfg.mode);
   cfg.sleepEnabled  = prefs.getBool("sleep", cfg.sleepEnabled);
@@ -285,6 +354,10 @@ void saveSensing() {
   prefs.putInt("cells", cfg.cellCount);
   prefs.putFloat("vmin", cfg.cellMinV);
   prefs.putFloat("vmax", cfg.cellMaxV);
+  prefs.putString("name", cfg.name);
+  prefs.putInt("ledpin", cfg.ledPin);
+  prefs.putBool("ledlow", cfg.ledActiveLow);
+  prefs.putInt("btnpin", cfg.buttonPin);
   prefs.end();
   analogReadResolution(cfg.adcResBits);
 }
@@ -342,6 +415,26 @@ bool applyConfigJson(const String& body) {
     String pid = doc["batteryPinId"].as<String>();
     if (pid.startsWith("gpio")) cfg.adcPin = pid.substring(4).toInt();
   }
+
+  // An empty name is a real value: it hands the board back to its automatic
+  // MAC-derived one rather than being ignored.
+  if (doc.containsKey("deviceName")) {
+    strlcpy(cfg.name, doc["deviceName"] | "", sizeof(cfg.name));
+  }
+
+  // Board wiring. -1 means "this board has none", which is a real answer for
+  // both of these and has to survive the round trip.
+  if (doc.containsKey("statusLedPin")) {
+    int pin = doc["statusLedPin"];
+    if (pin >= -1 && pin <= 48) cfg.ledPin = pin;
+  }
+  if (doc.containsKey("statusLedActiveLow")) cfg.ledActiveLow = doc["statusLedActiveLow"];
+  if (doc.containsKey("wakeButtonPin")) {
+    int pin = doc["wakeButtonPin"];
+    // Refuse a button the chip could never wake on rather than pretending.
+    if (pin == -1 || isWakeCapable(pin)) cfg.buttonPin = pin;
+  }
+
   saveSensing();
   return true;
 }
@@ -356,7 +449,154 @@ String configJson() {
   doc["calibrationFactor"] = cfg.calibration;
   doc["sampleIntervalMs"]  = cfg.sampleMs;
   doc["cellCount"]         = cfg.cellCount;
+  doc["deviceName"]         = String(cfg.name);
+  doc["statusLedPin"]       = cfg.ledPin;
+  doc["statusLedActiveLow"] = cfg.ledActiveLow;
+  doc["wakeButtonPin"]      = cfg.buttonPin;
   String out; serializeJson(doc, out); return out;
+}
+
+// ------------------------------------------------------ calibration region ---
+//
+// A factory-fresh board has never met the phone: no Bluetooth pairing, no
+// Wi-Fi, nothing in NVS. So the phone writes the calibration straight into
+// flash while it is flashing the firmware over USB — into a 4 KB region that
+// lives *outside* the program image (`calib` in partitions.csv). Reflashing
+// the app never disturbs it, and it is readable on the very first boot.
+//
+//   offset  size  field
+//        0     4  magic "BHCB"
+//        4     2  format version (1)
+//        6     2  flags (reserved, 0)
+//        8     4  payload length
+//       12     4  CRC-32 (IEEE) of the payload
+//       16     N  UTF-8 JSON: a PinConfiguration plus "stamp"
+//
+// The region wins exactly once per stamp: the applied stamp is mirrored into
+// NVS, so a board reconfigured later over Bluetooth keeps the newer settings
+// instead of being dragged back to whatever was flashed months ago.
+
+static const uint32_t CALIB_MAGIC       = 0x42434842UL;  // "BHCB", LE
+static const uint16_t CALIB_VERSION     = 1;
+static const size_t   CALIB_HEADER_SIZE = 16;
+static const size_t   CALIB_MAX_PAYLOAD = 2048;
+
+// Data-partition subtype in the user-defined range (0x40-0xFE).
+static const esp_partition_subtype_t CALIB_SUBTYPE = (esp_partition_subtype_t)0x40;
+
+uint32_t crc32Buf(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFUL;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int b = 0; b < 8; b++) {
+      crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320UL : 0);
+    }
+  }
+  return ~crc;
+}
+
+CalibRegion calibRegion() {
+  CalibRegion r;
+  const esp_partition_t* p =
+      esp_partition_find_first(ESP_PARTITION_TYPE_DATA, CALIB_SUBTYPE, "calib");
+  if (p) {
+    r.offset = p->address;
+    r.size   = p->size;
+    r.found  = true;
+    return r;
+  }
+#ifdef CALIB_FLASH_OFFSET
+  r.offset = CALIB_FLASH_OFFSET;
+  r.size   = 0x1000;
+  r.found  = true;
+#endif
+  return r;
+}
+
+// Reads and validates the region. `payload` gets the JSON, `stamp` the value
+// the phone tagged it with.
+bool readCalibRegion(String& payload) {
+  CalibRegion r = calibRegion();
+  if (!r.found) return false;
+
+  uint8_t head[CALIB_HEADER_SIZE];
+  if (esp_flash_read(esp_flash_default_chip, head, r.offset, sizeof(head)) != ESP_OK)
+    return false;
+
+  uint32_t magic = (uint32_t)head[0] | ((uint32_t)head[1] << 8) |
+                   ((uint32_t)head[2] << 16) | ((uint32_t)head[3] << 24);
+  uint16_t ver   = (uint16_t)head[4] | ((uint16_t)head[5] << 8);
+  uint32_t len   = (uint32_t)head[8] | ((uint32_t)head[9] << 8) |
+                   ((uint32_t)head[10] << 16) | ((uint32_t)head[11] << 24);
+  uint32_t crc   = (uint32_t)head[12] | ((uint32_t)head[13] << 8) |
+                   ((uint32_t)head[14] << 16) | ((uint32_t)head[15] << 24);
+
+  if (magic != CALIB_MAGIC || ver != CALIB_VERSION) return false;
+  if (len == 0 || len > CALIB_MAX_PAYLOAD || len > r.size - CALIB_HEADER_SIZE)
+    return false;
+
+  uint8_t* buf = (uint8_t*)malloc(len + 1);
+  if (!buf) return false;
+  bool ok = esp_flash_read(esp_flash_default_chip, buf, r.offset + CALIB_HEADER_SIZE,
+                           len) == ESP_OK &&
+            crc32Buf(buf, len) == crc;
+  if (ok) {
+    buf[len] = 0;
+    payload = String((const char*)buf);
+  }
+  free(buf);
+  return ok;
+}
+
+// Rewrites the region from the board itself, so a calibration that arrived
+// over Bluetooth also survives a later app reflash.
+bool writeCalibRegion(const String& payload) {
+  CalibRegion r = calibRegion();
+  if (!r.found) return false;
+  size_t len = payload.length();
+  if (len == 0 || len > CALIB_MAX_PAYLOAD || len + CALIB_HEADER_SIZE > r.size)
+    return false;
+
+  uint32_t crc = crc32Buf((const uint8_t*)payload.c_str(), len);
+  uint8_t head[CALIB_HEADER_SIZE] = {0};
+  head[0] = (uint8_t)(CALIB_MAGIC);       head[1] = (uint8_t)(CALIB_MAGIC >> 8);
+  head[2] = (uint8_t)(CALIB_MAGIC >> 16); head[3] = (uint8_t)(CALIB_MAGIC >> 24);
+  head[4] = (uint8_t)(CALIB_VERSION);     head[5] = (uint8_t)(CALIB_VERSION >> 8);
+  head[8] = (uint8_t)(len);        head[9]  = (uint8_t)(len >> 8);
+  head[10] = (uint8_t)(len >> 16); head[11] = (uint8_t)(len >> 24);
+  head[12] = (uint8_t)(crc);       head[13] = (uint8_t)(crc >> 8);
+  head[14] = (uint8_t)(crc >> 16); head[15] = (uint8_t)(crc >> 24);
+
+  if (esp_flash_erase_region(esp_flash_default_chip, r.offset, r.size) != ESP_OK)
+    return false;
+  if (esp_flash_write(esp_flash_default_chip, head, r.offset, sizeof(head)) != ESP_OK)
+    return false;
+  return esp_flash_write(esp_flash_default_chip, (const void*)payload.c_str(),
+                         r.offset + CALIB_HEADER_SIZE, len) == ESP_OK;
+}
+
+// Applied at boot, before the first sample: the region is how a board that has
+// never been provisioned knows which pin the battery is even on.
+void applyCalibRegion() {
+  String payload;
+  if (!readCalibRegion(payload)) return;
+
+  StaticJsonDocument<768> doc;
+  if (deserializeJson(doc, payload)) return;
+  uint32_t stamp = doc["stamp"] | 0UL;
+
+  prefs.begin("bh", true);
+  uint32_t applied = prefs.getULong("calstamp", 0);
+  prefs.end();
+  if (stamp != 0 && stamp == applied) return;   // already in NVS
+
+  if (!applyConfigJson(payload)) return;
+  if (doc.containsKey("power")) applyPowerJson(doc["power"].as<JsonObjectConst>());
+
+  prefs.begin("bh", false);
+  prefs.putULong("calstamp", stamp);
+  prefs.end();
+  Serial.printf("[calib] applied stamp=%u pin=%d\n", stamp, cfg.adcPin);
 }
 
 // Power/mode block, mirrored by the app's "Power" screen.
@@ -387,13 +627,24 @@ bool applyPowerJson(JsonObjectConst o) {
 
 // ----------------------------------------------------------------- status ---
 
-// Compact device status. Kept small so it fits one notification at the MTU the
-// apps negotiate; the full value is also readable.
-String statusJson(const char* event = nullptr, const char* detail = nullptr) {
-  StaticJsonDocument<384> doc;
+// Compact device status.
+//
+// This has to fit in a single notification, which carries MTU-3 bytes — and
+// nothing tells you when it does not: the notification is simply truncated, the
+// app's JSON parse fails, and an event the whole provisioning handshake waits
+// on never arrives. So: only fields that change, kept short. Anything static
+// about the board (its pins, its wiring) belongs in configJson, which is read
+// rather than notified and has no such limit.
+bool usbConsoleAttached();
+
+void fillStatus(JsonObject doc, const char* event, const char* detail) {
+  // Marks every line the board addresses to the app, so the serial console can
+  // be shared with a human staring at the boot log.
+  doc["bh"] = 1;
   if (event)  doc["ev"] = event;
   if (detail) doc["detail"] = detail;
   doc["id"]    = deviceId();
+  doc["name"]  = deviceName();      // the automatic one is derivable from id
   doc["fw"]    = FW_VERSION;
   doc["mode"]  = runMode == MODE_WIFI ? "wifi"
                  : (runMode == MODE_BLE ? "ble" : "pairing");
@@ -409,19 +660,30 @@ String statusJson(const char* event = nullptr, const char* detail = nullptr) {
   }
   if (hasWifiCreds()) doc["ssid"] = cfg.ssid;
   doc["cloud"] = hasCloud();
-  doc["led"]   = hasStatusLed();
+  doc["led"]   = hasStatusLed();     // which pin is in configJson
+  doc["usb"]   = usbConsoleAttached();
   // How long before this wake ends, so the app knows whether to hurry.
   int32_t left = (int32_t)(stayAwakeUntil - millis());
   doc["sleepInMs"]   = (!cfg.sleepEnabled || sleepBlocked) ? -1 : (left < 0 ? 0 : left);
   doc["nextWakeSec"] = runMode == MODE_WIFI ? cfg.wifiReportSec : cfg.bleWakeSec;
+}
+
+String statusJson(const char* event = nullptr, const char* detail = nullptr) {
+  StaticJsonDocument<480> doc;
+  fillStatus(doc.to<JsonObject>(), event, detail);
   String out; serializeJson(doc, out); return out;
 }
 
+bool serialAttached();
+
 void pushStatus(const char* event = nullptr, const char* detail = nullptr) {
-  if (!chStatus) return;
   String s = statusJson(event, detail);
-  chStatus->setValue(s.c_str());
-  if (bleConnected) chStatus->notify();
+  if (chStatus) {
+    chStatus->setValue(s.c_str());
+    if (bleConnected) chStatus->notify();
+  }
+  // The USB console sees the same event stream the app gets over BLE.
+  if (serialAttached()) serialWriteLine(s);
 }
 
 // Arm the blink and return immediately. The board reports which of the two
@@ -432,7 +694,7 @@ void startIdentify(uint8_t pulses = 6) {
     pushStatus("identify", "no-led");
     return;
   }
-  pinMode(kStatusLedPin, OUTPUT);
+  pinMode(cfg.ledPin, OUTPUT);
   blinkEdgesLeft = pulses * 2;
   blinkNextAt = millis();
   blinkOn = false;
@@ -476,7 +738,8 @@ void refreshAdvertisementData() {
   adv.setCompleteServices(BLEUUID(SVC_UUID));
 
   BLEAdvertisementData scan;
-  scan.setName(shortName().c_str());
+  // Cap it: the scan response has 31 bytes to hold the whole thing.
+  scan.setName(deviceName().substring(0, 24).c_str());
   scan.setManufacturerData(String((const char*)payload, sizeof(payload)));
 
   advertising->setAdvertisementData(adv);
@@ -526,6 +789,7 @@ class CfgCB : public BLECharacteristicCallbacks {
     lastBleActivity = millis();
     extendWake(cfg.bleIdleMs);
     applyConfigJson(String(c->getValue().c_str()));
+    refreshAdvertisementData();     // the name may have just changed
     pushStatus("config");
   }
   void onRead(BLECharacteristic* c) override { c->setValue(configJson().c_str()); }
@@ -569,6 +833,8 @@ void setupHTTP();
 // seconds and must not block the BLE stack's callback thread.
 volatile bool provPending = false;
 
+void beginProvisioning(const String& body);
+
 // Provisioning: the app writes SSID + password + backend token here, once,
 // over an already-connected BLE link. The board tries the credentials
 // immediately and reports the result as status events, so the app can show
@@ -587,47 +853,54 @@ class ProvCB : public BLECharacteristicCallbacks {
 
   void onWrite(BLECharacteristic* c) override {
     lastBleActivity = millis();
-    sleepBlocked = true;             // hold the board up for the whole handshake
-    StaticJsonDocument<512> doc;
-    if (deserializeJson(doc, String(c->getValue().c_str()))) {
-      sleepBlocked = false;
-      pushStatus("prov", "bad json");
-      return;
-    }
-
-    String mode = doc["mode"] | "wifi";
-    if (doc.containsKey("ssid"))
-      strlcpy(cfg.ssid, doc["ssid"] | "", sizeof(cfg.ssid));
-    if (doc.containsKey("password"))
-      strlcpy(cfg.pass, doc["password"] | "", sizeof(cfg.pass));
-    if (doc.containsKey("backendUrl"))
-      strlcpy(cfg.backendUrl, doc["backendUrl"] | "", sizeof(cfg.backendUrl));
-    if (doc.containsKey("deviceToken"))
-      strlcpy(cfg.token, doc["deviceToken"] | "", sizeof(cfg.token));
-    saveCloud();
-
-    if (doc.containsKey("power")) applyPowerJson(doc["power"].as<JsonObjectConst>());
-    if (doc.containsKey("reportIntervalSec")) {
-      cfg.wifiReportSec = doc["reportIntervalSec"];
-      savePower();
-    }
-
-    if (mode == "ble") {
-      cfg.mode = MODE_BLE; runMode = MODE_BLE; savePower();
-      refreshAdvertisementData();
-      pushStatus("prov", "ble mode");
-      sleepBlocked = false;
-      extendWake(cfg.bleIdleMs);
-      return;
-    }
-
-    // Wi-Fi mode: the join is verified before the mode is committed, so a typo
-    // can never strand the board somewhere the app cannot reach it. The work
-    // itself happens in loop() — see finishProvisioning().
-    pushStatus("wifi", "connecting");
-    provPending = true;
+    beginProvisioning(String(c->getValue().c_str()));
   }
 };
+
+// Shared by the BLE provisioning characteristic and the serial console, so a
+// board set up over the cable ends up in exactly the same state as one set up
+// over the air (DEVICE_PROTOCOL.md §2.2).
+void beginProvisioning(const String& body) {
+  sleepBlocked = true;             // hold the board up for the whole handshake
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, body)) {
+    sleepBlocked = false;
+    pushStatus("prov", "bad json");
+    return;
+  }
+
+  String mode = doc["mode"] | "wifi";
+  if (doc.containsKey("ssid"))
+    strlcpy(cfg.ssid, doc["ssid"] | "", sizeof(cfg.ssid));
+  if (doc.containsKey("password"))
+    strlcpy(cfg.pass, doc["password"] | "", sizeof(cfg.pass));
+  if (doc.containsKey("backendUrl"))
+    strlcpy(cfg.backendUrl, doc["backendUrl"] | "", sizeof(cfg.backendUrl));
+  if (doc.containsKey("deviceToken"))
+    strlcpy(cfg.token, doc["deviceToken"] | "", sizeof(cfg.token));
+  saveCloud();
+
+  if (doc.containsKey("power")) applyPowerJson(doc["power"].as<JsonObjectConst>());
+  if (doc.containsKey("reportIntervalSec")) {
+    cfg.wifiReportSec = doc["reportIntervalSec"];
+    savePower();
+  }
+
+  if (mode == "ble") {
+    cfg.mode = MODE_BLE; runMode = MODE_BLE; savePower();
+    refreshAdvertisementData();
+    pushStatus("prov", "ble mode");
+    sleepBlocked = false;
+    extendWake(cfg.bleIdleMs);
+    return;
+  }
+
+  // Wi-Fi mode: the join is verified before the mode is committed, so a typo
+  // can never strand the board somewhere the app cannot reach it. The work
+  // itself happens in loop() — see finishProvisioning().
+  pushStatus("wifi", "connecting");
+  provPending = true;
+}
 
 // Second half of provisioning, on the main task.
 void finishProvisioning() {
@@ -651,7 +924,51 @@ void finishProvisioning() {
   extendWake(cfg.bleIdleMs);
 }
 
-// Session control: who decides when the board sleeps.
+// Session control: who decides when the board sleeps. The BLE session
+// characteristic and the serial console both drive these helpers, so the two
+// transports can never drift apart.
+void sessionStayAwake(uint32_t sec) {
+  if (sec == 0) {
+    sleepBlocked = true;             // until the app disconnects
+  } else {
+    sleepBlocked = false;
+    extendWake(min(sec, (uint32_t)3600) * 1000UL);
+  }
+  pushStatus("awake");
+}
+
+void sessionSleep(uint32_t sec) {
+  if (sec > 0) {
+    if (runMode == MODE_WIFI) cfg.wifiReportSec = sec; else cfg.bleWakeSec = sec;
+    savePower();
+  }
+  sleepBlocked = false;
+  sleepRequested = true;
+  pushStatus("sleeping");
+}
+
+void sessionSetMode(uint8_t m) {
+  if (m > MODE_WIFI) return;
+  cfg.mode = m; runMode = m; savePower();
+  refreshAdvertisementData();
+  pushStatus("mode");
+}
+
+void sessionForgetWifi() {
+  cfg.ssid[0] = 0; cfg.pass[0] = 0;
+  cfg.mode = MODE_BLE; runMode = MODE_BLE;
+  saveCloud(); savePower();
+  pushStatus("wifi", "forgotten");
+}
+
+void sessionFactoryReset() {
+  pushStatus("reset");
+  delay(100);
+  factoryReset();
+  ESP.restart();
+}
+
+// The GATT wrapper around them (DEVICE_PROTOCOL.md §2.4):
 //   0x01 STAY_AWAKE  [uint16 sec]  extend this wake (0 = until disconnect)
 //   0x02 SLEEP_NOW   [uint32 sec]  sleep immediately, optional interval override
 //   0x03 FACTORY_RESET
@@ -663,66 +980,254 @@ class SessionCB : public BLECharacteristicCallbacks {
     String v = c->getValue();
     if (v.isEmpty()) return;
     lastBleActivity = millis();
-    uint8_t cmd = (uint8_t)v[0];
 
-    switch (cmd) {
-      case 0x01: {
-        uint32_t sec = (v.length() >= 3)
-            ? ((uint32_t)(uint8_t)v[1] | ((uint32_t)(uint8_t)v[2] << 8)) : 0;
-        if (sec == 0) {
-          sleepBlocked = true;
-        } else {
-          sleepBlocked = false;
-          extendWake(min(sec, (uint32_t)3600) * 1000UL);
-        }
-        pushStatus("awake");
+    switch ((uint8_t)v[0]) {
+      case 0x01:
+        sessionStayAwake(v.length() >= 3
+            ? ((uint32_t)(uint8_t)v[1] | ((uint32_t)(uint8_t)v[2] << 8)) : 0);
         break;
-      }
-      case 0x02: {
-        uint32_t sec = (v.length() >= 5)
+      case 0x02:
+        sessionSleep(v.length() >= 5
             ? ((uint32_t)(uint8_t)v[1] | ((uint32_t)(uint8_t)v[2] << 8) |
-               ((uint32_t)(uint8_t)v[3] << 16) | ((uint32_t)(uint8_t)v[4] << 24)) : 0;
-        if (sec > 0) {
-          if (runMode == MODE_WIFI) cfg.wifiReportSec = sec; else cfg.bleWakeSec = sec;
-          savePower();
-        }
-        sleepBlocked = false;
-        sleepRequested = true;
-        pushStatus("sleeping");
+               ((uint32_t)(uint8_t)v[3] << 16) | ((uint32_t)(uint8_t)v[4] << 24)) : 0);
         break;
-      }
-      case 0x03:
-        pushStatus("reset");
-        delay(100);
-        factoryReset();
-        ESP.restart();
-        break;
-      case 0x04:
-        if (v.length() >= 2) {
-          uint8_t m = (uint8_t)v[1];
-          if (m <= MODE_WIFI) { cfg.mode = m; runMode = m; savePower(); }
-          refreshAdvertisementData();
-          pushStatus("mode");
-        }
-        break;
-      case 0x05:
-        cfg.ssid[0] = 0; cfg.pass[0] = 0;
-        cfg.mode = MODE_BLE; runMode = MODE_BLE;
-        saveCloud(); savePower();
-        pushStatus("wifi", "forgotten");
-        break;
-      case 0x06:
-        startIdentify();
-        break;
-      default:
-        break;
+      case 0x03: sessionFactoryReset(); break;
+      case 0x04: if (v.length() >= 2) sessionSetMode((uint8_t)v[1]); break;
+      case 0x05: sessionForgetWifi(); break;
+      case 0x06: startIdentify(); break;
+      default: break;
     }
   }
 };
 
+// ------------------------------------------------------------ serial link ---
+//
+// Everything the phone can do over Bluetooth it can also do over the USB
+// cable. That matters for a board fresh off the reel: the phone has just
+// flashed it over UART and there is no radio session yet, but the calibration
+// still has to get in. Framing is one JSON object per line at 115200 baud:
+//
+//   phone -> board   {"cmd":"config","config":{ …PinConfiguration }}
+//   board -> phone   {"bh":1,"re":"config","ok":true}
+//   board -> phone   {"bh":1,"ev":"config", …status fields}   (unsolicited)
+//
+// Every line meant for the phone carries "bh":1; the human-readable boot log
+// does not, so a serial terminal and the app can share the same port. The full
+// command list is in DEVICE_PROTOCOL.md §7.
+
+static const uint32_t SERIAL_SESSION_MS = 60000;
+String   serialLine;
+uint32_t serialActiveUntil = 0;
+#if BH_USB_CONSOLE
+String   altSerialLine;
+#endif
+
+// The phone does not tell us which port it is on, so answers go to both.
+void serialWriteLine(const String& line) {
+  Serial.println(line);
+#if BH_USB_CONSOLE
+  BH_ALT_SERIAL.println(line);
+#endif
+}
+
+// True while a phone is talking to us over the cable. Sleeping mid-conversation
+// would look exactly like a failed flash from the app's side.
+bool serialAttached() { return (int32_t)(serialActiveUntil - millis()) > 0; }
+
+// True while a USB host has this board's native port open.
+//
+// Deep sleep powers the USB-Serial-JTAG peripheral down, so a board that sleeps
+// while plugged into a phone *disappears from the phone* — the app loses its
+// session mid-sentence and cannot get it back until the next wake. A board on a
+// USB host is also a board someone is working on, and it is running on that
+// host's power, so it stays up for as long as the cable is in. A plain charger
+// never enumerates, so this does not keep a field board awake.
+bool usbConsoleAttached() {
+#if BH_USB_CONSOLE
+  return (bool)Serial;
+#else
+  return false;
+#endif
+}
+
+void serialSend(JsonDocument& doc) {
+  doc["bh"] = 1;
+  String out;
+  serializeJson(doc, out);
+  serialWriteLine(out);
+}
+
+void serialReply(const char* re, bool ok, const char* detail = nullptr) {
+  StaticJsonDocument<192> doc;
+  doc["re"] = re;
+  doc["ok"] = ok;
+  if (detail) doc["detail"] = detail;
+  serialSend(doc);
+}
+
+void serialStatus(const char* re) {
+  StaticJsonDocument<512> doc;
+  JsonObject o = doc.to<JsonObject>();
+  fillStatus(o, nullptr, nullptr);
+  o["re"] = re;
+  o["ok"] = true;
+  serialSend(doc);
+}
+
+void handleSerialLine(const String& line) {
+  StaticJsonDocument<768> req;
+  if (deserializeJson(req, line)) { serialReply("?", false, "bad json"); return; }
+  String cmd = req["cmd"] | "";
+  if (cmd.isEmpty()) return;          // somebody else's JSON, not a command
+
+  // A phone on the wire owns the board for the next minute.
+  serialActiveUntil = millis() + SERIAL_SESSION_MS;
+  extendWake(SERIAL_SESSION_MS);
+
+  if (cmd == "hello" || cmd == "status") {
+    serialStatus(cmd.c_str());
+    return;
+  }
+
+  if (cmd == "getconfig") {
+    StaticJsonDocument<512> doc;
+    deserializeJson(doc, configJson());
+    doc["re"] = "getconfig";
+    doc["ok"] = true;
+    serialSend(doc);
+    return;
+  }
+
+  // "config" applies the settings for this session; "calib" also burns them
+  // into the flash region, so they survive a later reflash of the app.
+  if (cmd == "config" || cmd == "calib") {
+    String body;
+    if (req.containsKey("config")) serializeJson(req["config"], body);
+    else body = line;               // a bare PinConfiguration with "cmd" added
+
+    if (!applyConfigJson(body)) { serialReply(cmd.c_str(), false, "bad config"); return; }
+
+    if (cmd == "calib") {
+      StaticJsonDocument<768> doc;
+      deserializeJson(doc, body);
+      doc.remove("cmd");
+      doc["stamp"] = (uint32_t)(req["stamp"] | 0UL);
+      String stored;
+      serializeJson(doc, stored);
+      if (!writeCalibRegion(stored)) {
+        serialReply("calib", false, "no calib region");
+        pushStatus("config");
+        return;
+      }
+      prefs.begin("bh", false);
+      prefs.putULong("calstamp", (uint32_t)(req["stamp"] | 0UL));
+      prefs.end();
+    }
+    serialReply(cmd.c_str(), true);
+    pushStatus("config");
+    return;
+  }
+
+  if (cmd == "getcalib") {
+    String payload;
+    bool ok = readCalibRegion(payload);
+    CalibRegion r = calibRegion();
+    StaticJsonDocument<1024> doc;
+    doc["re"]     = "getcalib";
+    doc["ok"]     = ok;
+    doc["region"] = r.offset;
+    doc["size"]   = r.size;
+    if (ok) {
+      StaticJsonDocument<768> stored;
+      if (!deserializeJson(stored, payload)) doc["calib"] = stored;
+    }
+    serialSend(doc);
+    return;
+  }
+
+  if (cmd == "getpower") {
+    StaticJsonDocument<384> doc;
+    fillPowerJson(doc.to<JsonObject>());
+    doc["re"] = "getpower";
+    doc["ok"] = true;
+    serialSend(doc);
+    return;
+  }
+
+  if (cmd == "power") {
+    serialReply("power", applyPowerJson(req["power"].as<JsonObjectConst>()));
+    return;
+  }
+
+  // Same handler the BLE provisioning characteristic uses, so a board set up
+  // over the cable lands in exactly the same state as one set up over the air.
+  if (cmd == "prov") {
+    serialReply("prov", true, "started");
+    beginProvisioning(line);
+    return;
+  }
+
+  if (cmd == "session") {
+    String op = req["op"] | "";
+    if (op == "stayAwake") {
+      sessionStayAwake((uint32_t)(req["seconds"] | 0UL));
+      serialReply("session", true, "awake");
+    } else if (op == "sleep") {
+      sessionSleep((uint32_t)(req["seconds"] | 0UL));
+      serialReply("session", true, "sleeping");
+    } else if (op == "identify") {
+      startIdentify();
+      serialReply("session", true, "identify");
+    } else if (op == "setMode") {
+      sessionSetMode((uint8_t)(req["mode"] | 0));
+      serialReply("session", true, "mode");
+    } else if (op == "forgetWifi") {
+      sessionForgetWifi();
+      serialReply("session", true, "wifi forgotten");
+    } else if (op == "factoryReset") {
+      serialReply("session", true, "reset");
+      Serial.flush();
+      delay(100);
+      sessionFactoryReset();          // wipes NVS and reboots
+    } else {
+      serialReply("session", false, "unknown op");
+    }
+    return;
+  }
+
+  serialReply(cmd.c_str(), false, "unknown cmd");
+}
+
+void drainSerial(Stream& stream, String& buffer) {
+  while (stream.available()) {
+    char ch = (char)stream.read();
+    if (ch == '\r') continue;
+    if (ch != '\n') {
+      if (buffer.length() < 1024) buffer += ch;
+      else buffer = "";               // runaway line: drop it and resync
+      continue;
+    }
+    String line = buffer;
+    buffer = "";
+    line.trim();
+    if (line.startsWith("{")) handleSerialLine(line);
+  }
+}
+
+void serviceSerial() {
+  drainSerial(Serial, serialLine);
+#if BH_USB_CONSOLE
+  drainSerial(BH_ALT_SERIAL, altSerialLine);
+#endif
+}
+
 void setupBLE() {
   if (bleActive) return;
-  BLEDevice::init(shortName().c_str());
+  // Ask for the largest MTU the stack will take *before* init: the core leaves
+  // the local MTU at the 23-byte default otherwise, which caps notifications at
+  // 20 bytes and silently truncates every status push.
+  BLEDevice::setMTU(517);
+  BLEDevice::init(deviceName().substring(0, 24).c_str());
   BLEServer* srv = BLEDevice::createServer();
   srv->setCallbacks(new ServerCB());
   BLEService* svc = srv->createService(BLEUUID(SVC_UUID), 30);
@@ -967,12 +1472,9 @@ void setupHTTP() {
 // ------------------------------------------------------------- deep sleep ---
 
 bool buttonPressed() {
-#if WAKE_BUTTON_PIN >= 0
-  pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
-  return digitalRead(WAKE_BUTTON_PIN) == LOW;
-#else
-  return false;
-#endif
+  if (cfg.buttonPin < 0) return false;
+  pinMode(cfg.buttonPin, INPUT_PULLUP);
+  return digitalRead(cfg.buttonPin) == LOW;
 }
 
 uint32_t sleepSeconds() {
@@ -992,15 +1494,15 @@ void goToSleep(uint32_t seconds) {
   WiFi.mode(WIFI_OFF);
 
   esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
-#if WAKE_BUTTON_PIN >= 0
+  if (isWakeCapable(cfg.buttonPin)) {
 #if SOC_PM_SUPPORT_EXT0_WAKEUP
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)cfg.buttonPin, 0);
 #else
-  // C3/S3: the pad keeps no internal pull-up across deep sleep, so the button
-  // needs an external one (or it will wake the board continuously).
-  esp_deep_sleep_enable_gpio_wakeup(1ULL << WAKE_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+    // C3/S3: the pad keeps no internal pull-up across deep sleep, so the button
+    // needs an external one (or it will wake the board continuously).
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << cfg.buttonPin, ESP_GPIO_WAKEUP_GPIO_LOW);
 #endif
-#endif
+  }
   Serial.printf("[sleep] %u s\n", seconds);
   Serial.flush();
   esp_deep_sleep_start();          // never returns; setup() runs again on wake
@@ -1010,6 +1512,10 @@ void goToSleep(uint32_t seconds) {
 void maybeSleep() {
   if (sleepRequested) { goToSleep(sleepSeconds()); return; }
   if (!cfg.sleepEnabled || sleepBlocked) return;
+  if (serialAttached()) return;     // a phone is mid-conversation on the cable
+  // Sleeping would take the native USB port down with it, so a board on a USB
+  // host stays up until the cable comes out.
+  if (usbConsoleAttached()) return;
   if (otaActive) { extendWake(30000); return; }
   if (blinkEdgesLeft > 0) return;   // finish identifying first
 
@@ -1027,8 +1533,14 @@ void maybeSleep() {
 
 void setup() {
   Serial.begin(115200);
+#if BH_USB_CONSOLE
+  BH_ALT_SERIAL.begin(115200);      // the UART, when Serial is the USB port
+#endif
   bootCount++;
   loadConfig();
+  // Whatever the phone burned in over USB outranks the compiled-in defaults,
+  // and it is the only thing a board that has never been provisioned has.
+  applyCalibRegion();
   sampleBattery();
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
@@ -1090,6 +1602,8 @@ unsigned long lastSample = 0;
 unsigned long lastAdvRefresh = 0;
 
 void loop() {
+  serviceSerial();
+
   if (runMode == MODE_WIFI && wifiOnline) server.handleClient();
 
   if (provPending) {
