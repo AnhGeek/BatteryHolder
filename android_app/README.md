@@ -168,9 +168,13 @@ The file is `beacons.jsonl` in the app's private files directory —
 on the Dart side, which resolve to the same path. The service is the only
 writer, so there is no cross-process locking to get wrong.
 
-A row is written when the advertised payload changes, or at most once a minute
-per board otherwise, which works out at roughly one row per wake instead of one
-per advertising packet. The file is trimmed to the newest 4000 rows.
+A row is written when a board is sighted more than 25 s after the last time it
+was seen — i.e. when it slept in between — so a wake yields one row rather than
+one per advertising packet. The board rebuilds its advertisement every 10 s
+while awake and the ADC never repeats a reading, so collapsing on the *payload*
+does not work; only the gap does. A mode change (the §2.1 flags) is logged
+immediately, and a board that never sleeps is recorded every 15 minutes so the
+row count still tracks something. The file is trimmed to the newest 4000 rows.
 
 Logging is **off until switched on** from the Monitor tab; the choice persists
 and is honoured on reboot. It defaults to off because a switch that reads "on"
