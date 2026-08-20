@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../app/app_state.dart';
 import '../../design_system/components.dart';
 import '../../design_system/theme.dart';
+import '../../models/device_status.dart';
 import '../../models/firmware_bundle.dart';
 import '../../services/usb_flash_service.dart';
 
@@ -11,9 +12,10 @@ import '../../services/usb_flash_service.dart';
 ///
 /// This is the only path that works on hardware nobody has configured yet: no
 /// Bluetooth pairing, no Wi-Fi credentials, nothing in NVS. The app writes the
-/// firmware it ships with, drops the calibration into the board's own flash
-/// region, and then confirms it over the serial console — all through the OTG
-/// port.
+/// firmware it ships with and drops the whole configuration — sensing chain,
+/// run mode, wake timers, credentials — into the board's own flash region, all
+/// through the OTG port. The board applies it on the next boot, so it comes off
+/// the cable set up rather than waiting to be asked over Bluetooth.
 class UsbFlashCard extends StatefulWidget {
   const UsbFlashCard({super.key});
 
@@ -69,8 +71,6 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
                 SizedBox(height: AppTheme.spacing.sm),
               ] else ...[
                 _planCard(context, plan, appState),
-                SizedBox(height: AppTheme.spacing.md),
-                _provisionToggle(context, appState, usb),
                 SizedBox(height: AppTheme.spacing.lg),
               ],
               ..._actions(context, appState, usb, plan),
@@ -160,46 +160,6 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
     ];
   }
 
-  /// Whether the cable also claims the board into Bluetooth mode.
-  Widget _provisionToggle(
-    BuildContext context,
-    AppState appState,
-    UsbFlashService usb,
-  ) {
-    final c = AppTheme.colorOf(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        AppCard(
-          child: Row(
-            children: [
-              Expanded(
-                child: Text('Set to Bluetooth mode',
-                    style:
-                        AppTheme.font.body.copyWith(color: c.textPrimary)),
-              ),
-              Switch(
-                value: appState.provisionOverUsb,
-                activeThumbColor: c.brand,
-                onChanged: usb.isBusy
-                    ? null
-                    : (value) => appState.provisionOverUsb = value,
-              ),
-            ],
-          ),
-        ),
-        SizedBox(height: AppTheme.spacing.xs),
-        Text(
-          'Finishes setup over the cable, so the board comes out ready to '
-          'monitor instead of waiting in pairing mode. Turn it off if this '
-          'board should report over Wi-Fi — that needs the Devices tab, which '
-          'is where the password is asked for.',
-          style: AppTheme.font.footnote.copyWith(color: c.textSecondary),
-        ),
-      ],
-    );
-  }
-
   Widget _noPlan(BuildContext context, AppState appState) {
     final c = AppTheme.colorOf(context);
     return Column(
@@ -259,6 +219,23 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
             '${calibration['dividerR1KOhm']}k / ${calibration['dividerR2KOhm']}k '
                 '· ×${calibration['calibrationFactor']}',
           ),
+          const Divider(),
+          // The reason this screen no longer hands the user off to a setup
+          // wizard: the mode and the timer are in the bytes about to be
+          // written, so the board is set up as soon as it boots.
+          _row(context, 'Runs as', plan.bootMode.displayName),
+          const Divider(),
+          _row(
+            context,
+            'Wakes every',
+            PowerConfig.intervalLabel(
+                plan.setup?.intervalSec ?? const PowerConfig().bleWakeSec),
+          ),
+          if (plan.setup?.mode == RunMode.wifi &&
+              (plan.setup?.ssid ?? '').isNotEmpty) ...[
+            const Divider(),
+            _row(context, 'Joins', plan.setup!.ssid),
+          ],
           const Divider(),
           _row(context, 'Calibration at',
               '0x${plan.bundle.calibration.offset.toRadixString(16)}'),
@@ -403,9 +380,13 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
           if (done) ...[
             SizedBox(height: AppTheme.spacing.sm),
             Callout(
-              text: 'The board is running the new firmware in pairing mode. '
-                  'Unplug it and find it on the Devices tab to finish setup '
-                  'over Bluetooth.',
+              text: usb.boardStatus?['mode'] == 'pairing'
+                  ? 'The board is running the new firmware and waiting to be '
+                      'claimed, because the image was built with "Decide '
+                      'later". Find it on the Devices tab to set it up.'
+                  : 'The board is running the new firmware with the settings '
+                      'from the image. Unplug it — there is nothing left to set '
+                      'up. The Devices tab is where you change it later.',
               tint: c.success,
               icon: Icons.check_circle,
             ),
@@ -480,7 +461,6 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
 
   Future<void> _flash(AppState appState, FlashPlan plan) async {
     try {
-      appState.usbFlasher.provisionAsBle = appState.provisionOverUsb;
       await appState.usbFlasher.flash(plan);
     } catch (_) {
       // The service already logged it and moved to the failed phase.
@@ -489,7 +469,6 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
 
   Future<void> _calibrateOnly(AppState appState, FlashPlan plan) async {
     try {
-      appState.usbFlasher.provisionAsBle = appState.provisionOverUsb;
       await appState.usbFlasher.sendCalibration(plan);
     } catch (_) {
       // Same: the log on screen is the report.
@@ -526,13 +505,14 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
             style: AppTheme.font.headline.copyWith(color: c.textPrimary),
           ),
           content: Text(
-            usb.boardStatus?['mode'] == 'ble'
-                ? 'The firmware and the calibration are on the board, and it is '
-                    'already in Bluetooth mode — no further setup needed. Read '
-                    'it back once more, or go and watch it report.'
-                : 'The firmware and the calibration are both on the board and '
-                    'it is running them. Read it back once more, or move on to '
-                    'setting it up over Bluetooth.',
+            usb.boardStatus?['mode'] == 'pairing'
+                ? 'The firmware and the calibration are both on the board and '
+                    'it is running them, but the image left the run mode open. '
+                    'Read it back once more, or set it up from Devices.'
+                : 'The board is flashed, calibrated and already running in '
+                    '${usb.boardStatus?['mode'] ?? 'its configured'} mode — '
+                    'nothing left to set up. Read it back once more, or go and '
+                    'watch it report.',
             style: AppTheme.font.body.copyWith(color: c.textSecondary),
           ),
           actions: [

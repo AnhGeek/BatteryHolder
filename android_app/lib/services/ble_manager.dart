@@ -721,7 +721,7 @@ class BLEManager extends ChangeNotifier {
   /// Correct the cached scan entry after setup succeeds.
   ///
   /// The list still holds the advertisement captured *before* provisioning, so
-  /// without this a board the user just set up keeps its "Needs setup" badge
+  /// without this a board the user just set up keeps its "Unclaimed" badge
   /// until it next wakes and re-advertises — which can be minutes away.
   void markProvisioned(String deviceId, RunMode mode) {
     final index = _discovered.indexWhere((d) => d.id == deviceId);

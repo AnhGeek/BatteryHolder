@@ -49,6 +49,17 @@ class _DeviceListViewState extends State<DeviceListView> {
               labelOf: (t) => t.displayName,
               onChanged: (t) => appState.activeTransport = t,
             ),
+            SizedBox(height: AppTheme.spacing.md),
+            // Setting a board up is not what this screen is for any more: a
+            // board is configured before it is flashed, and arrives here
+            // running. Scanning is how you find one again to change it.
+            Callout(
+              text: 'Boards arrive here already set up — the mode and the wake '
+                  'timer come from the image they were flashed with. Scan to '
+                  'find one and change how it reports.',
+              tint: c.brand,
+              icon: Icons.info,
+            ),
             SizedBox(height: AppTheme.spacing.lg),
             if (appState.activeTransport == FlashTransport.ble)
               _BLEDeviceList(ble: appState.ble)
@@ -176,16 +187,21 @@ class _BLEDeviceRow extends StatelessWidget {
   /// awake right now. Outside its wake window a connect attempt just times out.
   bool get _canConnect => device.isReachable || _isConnectedToThis;
 
+  /// Tapping a row is "I want to change this board".
+  ///
+  /// A board flashed from the Configuration screen arrives here already set up
+  /// — the run mode and the timers came out of the image — so the wizard is no
+  /// longer the front door. It is the fallback for the one board that genuinely
+  /// has no mode yet: one flashed with "Decide later", or one whose pairing
+  /// button was held down. Everything else opens its settings.
   Future<void> _open(BuildContext context) async {
-    // A board that has never been provisioned goes straight into the wizard;
-    // anything else just connects.
     if (device.needsSetup) {
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => BoardSetupWizard(device: device),
       ));
       return;
     }
-    await ble.connect(device);
+    await _openSettings(context);
   }
 
   /// Settings need a live link, so connect on the way in if necessary.
@@ -221,9 +237,14 @@ class _BLEDeviceRow extends StatelessWidget {
                             style: AppTheme.font.headline
                                 .copyWith(color: c.textPrimary)),
                       ),
+                      // "Unclaimed", not "Needs setup": a board flashed from
+                      // the Configuration screen is set up before it ever
+                      // advertises, so this badge now means the rarer thing —
+                      // an image built with no run mode, or a pairing-button
+                      // wake. Tapping it still opens the wizard.
                       if (device.needsSetup) ...[
                         SizedBox(width: AppTheme.spacing.sm),
-                        _Badge(text: 'Needs setup', tint: c.warning),
+                        _Badge(text: 'Unclaimed', tint: c.warning),
                       ] else if (device.wifiMode) ...[
                         SizedBox(width: AppTheme.spacing.sm),
                         _Badge(

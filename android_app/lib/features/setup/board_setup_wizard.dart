@@ -10,8 +10,15 @@ import '../../models/device_status.dart';
 import '../../services/ble_manager.dart';
 import '../../services/firmware_flasher.dart';
 
-/// The setup flow from DEVICE_PROTOCOL.md §1 / FLUTTER_APP_HANDOFF.md §4:
-/// connect → choose how the board reports → (Wi-Fi credentials) → done.
+/// Claims a board that arrived unclaimed — DEVICE_PROTOCOL.md §1,
+/// FLUTTER_APP_HANDOFF.md §4: connect → choose how the board reports →
+/// (Wi-Fi credentials) → done.
+///
+/// No longer the normal way a board is set up. A board flashed from the
+/// Configuration screen takes its run mode and timers out of the calibration
+/// region and is claimed before it ever advertises. This is the path for the
+/// board that genuinely has no mode: one built with "Decide later", one whose
+/// pairing button was held down, or one someone else flashed.
 ///
 /// Entered with a board already picked from the scan, so step 1 of the handoff's
 /// five steps is the device list itself.
@@ -140,13 +147,19 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
     });
 
     try {
+      // The timers the user picked on the Configuration screen, so a board
+      // claimed here ends up in the same state as one claimed by its image.
+      final power = context.read<AppState>().boardSetup.power;
       await _ble.provision(
         mode: _chosenMode,
         ssid: _chosenMode == RunMode.wifi ? _ssid.text.trim() : null,
         password: _chosenMode == RunMode.wifi ? _password.text : null,
+        power: power,
         // Cloud check-in needs a deployed backend; without one the board still
         // joins Wi-Fi and serves readings locally over mDNS.
-        reportIntervalSec: _chosenMode == RunMode.wifi ? 900 : null,
+        reportIntervalSec: _chosenMode == RunMode.wifi
+            ? power.intervalSecFor(RunMode.wifi)
+            : null,
       );
     } catch (e) {
       if (!mounted) return;
@@ -363,7 +376,9 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
   List<Widget> _doneStep(BuildContext context) {
     final c = AppTheme.colorOf(context);
     final status = _ble.status;
-    final interval = _chosenMode == RunMode.wifi ? 'every 15 min' : 'every 5 min';
+    final power = context.read<AppState>().boardSetup.power;
+    final interval =
+        'every ${PowerConfig.intervalLabel(power.intervalSecFor(_chosenMode))}';
 
     return [
       Callout(
