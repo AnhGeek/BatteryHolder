@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "firmwareVersion": "2.1.0",
-  "builtAt": "2026-08-20T06:20:57+00:00",
+  "firmwareVersion": "2.2.0",
+  "builtAt": "2026-08-20T11:20:15+00:00",
   "bundles": {
     "esp32-wroom": {
       "boardId": "esp32-wroom",
@@ -29,8 +29,8 @@
         {
           "file": "firmware.bin",
           "offset": 65536,
-          "size": 1896592,
-          "md5": "19567e7bd057565ace4ac50e11256c89"
+          "size": 1896992,
+          "md5": "c660aaa62af6503a14e71747cf043440"
         }
       ],
       "flashMode": "dio",
@@ -76,8 +76,8 @@
         {
           "file": "firmware.bin",
           "offset": 65536,
-          "size": 1522864,
-          "md5": "2f6551a16d6c9651f5d385b9952f93e7"
+          "size": 1523632,
+          "md5": "b3adcd24ab3e2deebeb5262ac953b624"
         }
       ],
       "flashMode": "dio",
@@ -105,8 +105,8 @@
         {
           "file": "firmware.bin",
           "offset": 0,
-          "size": 471968,
-          "md5": "4339b9f94a5b55d3dfb7809fbc8ff981"
+          "size": 472336,
+          "md5": "7c8238eea52644156a26287b33c729ad"
         }
       ],
       "flashMode": "dio",
@@ -134,8 +134,8 @@
         {
           "file": "firmware.bin",
           "offset": 0,
-          "size": 471968,
-          "md5": "4339b9f94a5b55d3dfb7809fbc8ff981"
+          "size": 472336,
+          "md5": "7c8238eea52644156a26287b33c729ad"
         }
       ],
       "flashMode": "dio",
