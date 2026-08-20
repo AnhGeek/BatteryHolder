@@ -1,17 +1,25 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:path_provider/path_provider.dart';
 
 import '../models/battery_reading.dart';
 import '../models/board.dart';
+import '../models/calibration_image.dart';
+import '../models/firmware_bundle.dart';
 import '../models/firmware_image.dart';
 import '../models/pin.dart';
 import '../models/pin_configuration.dart';
+import '../services/beacon_log_store.dart';
+import '../services/beacon_scan_service_client.dart';
 import '../services/ble_manager.dart';
+import '../services/firmware_bundle_repository.dart';
 import '../services/firmware_flasher.dart';
 import '../services/firmware_repository.dart';
+import '../services/usb_flash_service.dart';
 import '../services/wifi_ota_service.dart';
 
 /// Backend + integration configuration. Fill these in after deploying
@@ -49,6 +57,26 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // MARK: Tab selection
+  //
+  // The shell keeps one navigator per tab, so a screen pushed inside Setup
+  // cannot reach the Flash tab through its own Navigator. Routing the index
+  // through the shared state is what lets "Generate BIN file" hand the user
+  // straight to the flash screen.
+  static const int setupTab = 0;
+  static const int devicesTab = 1;
+  static const int monitorTab = 2;
+  static const int flashTab = 3;
+
+  int _selectedTab = setupTab;
+  int get selectedTab => _selectedTab;
+
+  set selectedTab(int value) {
+    if (_selectedTab == value) return;
+    _selectedTab = value;
+    notifyListeners();
+  }
+
   // MARK: Transport selection
   FlashTransport _activeTransport = FlashTransport.ble;
   FlashTransport get activeTransport => _activeTransport;
@@ -81,6 +109,18 @@ class AppState extends ChangeNotifier {
   late final FirmwareFlasher flasher;
   final FirmwareRepository firmwareRepo;
 
+  /// Persisted advertisement history, written by the background scan service.
+  final BeaconLogStore beaconLog = BeaconLogStore();
+
+  /// Controls that background service.
+  final BeaconScanServiceClient beaconScan = BeaconScanServiceClient();
+
+  /// The prebuilt firmware images shipped in `assets/firmware/`.
+  final FirmwareBundleRepository firmwareBundles;
+
+  /// Flashes a bare board over the USB cable.
+  final UsbFlashService usbFlasher = UsbFlashService();
+
   final List<StreamSubscription<DeviceSample>> _sampleSubs = [];
   static const _maxReadings = 120;
 
@@ -88,8 +128,10 @@ class AppState extends ChangeNotifier {
     BLEManager? ble,
     WiFiOTAService? wifi,
     FirmwareRepository? firmwareRepo,
+    FirmwareBundleRepository? firmwareBundles,
   })  : ble = ble ?? BLEManager(),
         wifi = wifi ?? WiFiOTAService(),
+        firmwareBundles = firmwareBundles ?? FirmwareBundleRepository(),
         firmwareRepo = firmwareRepo ??
             FirmwareRepository(baseURL: AppConfig.firmwareApiBaseURL) {
     flasher = FirmwareFlasher(ble: this.ble, wifi: this.wifi);
@@ -109,6 +151,12 @@ class AppState extends ChangeNotifier {
     _setBootstrapStatus('Loading boards…');
     _boards = await _loadBoards();
     notifyListeners();
+
+    // Bring back whatever the background service logged while we were closed,
+    // then make sure it is running again.
+    await beaconLog.reload();
+    await beaconScan.refresh();
+    if (beaconScan.isEnabled) await beaconScan.start();
 
     _setBootstrapStatus('Fetching data…');
     await _prefetchCatalog();
@@ -231,6 +279,91 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // MARK: USB image generation
+
+  /// The image set the Flash screen is holding, if one has been generated.
+  FlashPlan? _flashPlan;
+  FlashPlan? get flashPlan => _flashPlan;
+
+  /// Where the generated calibration image was written on the phone.
+  String? _generatedImagePath;
+  String? get generatedImagePath => _generatedImagePath;
+
+  /// Whether flashing also blanks the board's saved settings.
+  ///
+  /// On by default, and the reason a reflashed board behaves like a new one:
+  /// NVS otherwise keeps the run mode and wake interval from its previous life,
+  /// so a board that had been left on a one-minute test cycle would stay on it
+  /// instead of taking the firmware's five-minute default.
+  bool _eraseSavedSettings = true;
+  bool get eraseSavedSettings => _eraseSavedSettings;
+
+  set eraseSavedSettings(bool value) {
+    _eraseSavedSettings = value;
+    notifyListeners();
+  }
+
+  /// Whether the USB session also claims the board into Bluetooth mode.
+  ///
+  /// A board is born in `pairing` mode and stays there until something
+  /// provisions it — that is deliberate, since the run mode decides its power
+  /// budget and a board must never join a network nobody gave it. But the
+  /// cable can answer that question as easily as Bluetooth can, and for a
+  /// Bluetooth-only board it is the same one-word answer every time. Turning
+  /// this off, or choosing Wi-Fi, leaves the decision to the Devices wizard.
+  bool _provisionOverUsb = true;
+  bool get provisionOverUsb => _provisionOverUsb;
+
+  set provisionOverUsb(bool value) {
+    _provisionOverUsb = value;
+    notifyListeners();
+  }
+
+  /// Assembles the flashable image set for the selected board.
+  ///
+  /// Nothing is compiled here — the firmware `.bin` files were built by
+  /// `tools/build_firmware.py` and ship inside the app. This checks they are
+  /// present and intact, generates the calibration image from the settings on
+  /// screen, writes that image out as a real file, and returns the plan the
+  /// Flash screen then writes over USB.
+  Future<FlashPlan> generateFlashImage() async {
+    final board = _selectedBoard;
+    final config = _pinConfiguration;
+    if (board == null || config == null) {
+      throw const FirmwareBundleException('Choose a board first.');
+    }
+
+    final calibration = CalibrationImage.now(config);
+    final plan = await firmwareBundles.buildPlan(
+      boardId: board.id,
+      config: config,
+      eraseSavedSettings: _eraseSavedSettings,
+      calibration: calibration,
+    );
+
+    _generatedImagePath = await _writeCalibrationFile(board.id, calibration);
+    _flashPlan = plan;
+    notifyListeners();
+    return plan;
+  }
+
+  /// Drops the calibration image into app storage so there is a real artefact
+  /// to point at — inspectable, and the same bytes that go into flash.
+  Future<String?> _writeCalibrationFile(
+      String boardId, CalibrationImage image) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final out = Directory('${dir.path}/generated');
+      if (!out.existsSync()) out.createSync(recursive: true);
+      final file = File('${out.path}/$boardId-calibration.bin');
+      await file.writeAsBytes(image.build(), flush: true);
+      return file.path;
+    } catch (_) {
+      // Storage is a convenience here: the plan already holds the bytes.
+      return null;
+    }
+  }
+
   // MARK: Flashing
 
   Future<void> flash(FirmwareImage image) async {
@@ -283,6 +416,9 @@ class AppState extends ChangeNotifier {
     for (final s in _sampleSubs) {
       s.cancel();
     }
+    beaconLog.dispose();
+    beaconScan.dispose();
+    usbFlasher.dispose();
     ble.dispose();
     wifi.dispose();
     flasher.dispose();

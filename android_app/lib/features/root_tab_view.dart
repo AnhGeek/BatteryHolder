@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../app/app_state.dart';
 import '../design_system/theme.dart';
 import 'board_setup/board_setup_view.dart';
 import 'devices/device_list_view.dart';
@@ -19,8 +21,6 @@ class RootTabView extends StatefulWidget {
 }
 
 class _RootTabViewState extends State<RootTabView> {
-  int _index = 0;
-
   final _navKeys = List.generate(4, (_) => GlobalKey<NavigatorState>());
 
   static const _tabs = <_TabSpec>[
@@ -40,11 +40,15 @@ class _RootTabViewState extends State<RootTabView> {
   @override
   Widget build(BuildContext context) {
     final c = AppTheme.colorOf(context);
+    // The index lives in AppState so a screen inside one tab's stack can send
+    // the user to another tab — "Generate BIN file" hands off to Flash.
+    final appState = context.watch<AppState>();
+    final index = appState.selectedTab;
 
     return Scaffold(
       backgroundColor: c.background,
       body: IndexedStack(
-        index: _index,
+        index: index,
         children: [
           for (var i = 0; i < _tabs.length; i++)
             Navigator(
@@ -62,13 +66,13 @@ class _RootTabViewState extends State<RootTabView> {
           border: Border(top: BorderSide(color: c.border, width: 0.5)),
         ),
         child: BottomNavigationBar(
-          currentIndex: _index,
+          currentIndex: index,
           // Tapping the active tab pops that tab to its root, like iOS.
           onTap: (i) {
-            if (i == _index) {
+            if (i == index) {
               _navKeys[i].currentState?.popUntil((r) => r.isFirst);
             } else {
-              setState(() => _index = i);
+              appState.selectedTab = i;
             }
           },
           type: BottomNavigationBarType.fixed,

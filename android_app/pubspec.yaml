@@ -25,6 +25,10 @@ dependencies:
   permission_handler: ^11.3.1     # Android 12+ runtime Bluetooth permissions
   intl: ^0.20.2                   # Byte/number formatting
 
+  # Beacon log persistence — the background scan service writes JSONL into the
+  # app's files dir and the UI reads it back.
+  path_provider: ^2.1.5
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -34,3 +38,10 @@ flutter:
   uses-material-design: true
   assets:
     - assets/boards.json
+    # Prebuilt firmware, staged by tools/build_firmware.py. The app ships these
+    # images and pushes them to a board over USB; it never compiles anything.
+    - assets/firmware/manifest.json
+    - assets/firmware/esp32-wroom/
+    - assets/firmware/esp32c3-devkit/
+    - assets/firmware/esp8266-nodemcu/
+    - assets/firmware/esp8266-d1mini/

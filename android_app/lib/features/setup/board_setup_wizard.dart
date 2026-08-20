@@ -39,6 +39,18 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
   StreamSubscription<DeviceStatus>? _statusSub;
   Timer? _timeout;
 
+  /// Polls the status characteristic while the board is answering.
+  ///
+  /// Notifications are capped at MTU-3 bytes and vanish silently when the
+  /// status object does not fit — which is exactly how this screen used to hang
+  /// on "Saving Bluetooth mode…" while the board had in fact already done it.
+  /// Reads have no such cap, so this is the belt to the notification's braces.
+  Timer? _statusPoll;
+
+  /// The handshake is over. Guards against the poll and the notification both
+  /// delivering the same event.
+  bool _settled = false;
+
   BLEManager get _ble => context.read<AppState>().ble;
 
   @override
@@ -51,6 +63,7 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
   void dispose() {
     _statusSub?.cancel();
     _timeout?.cancel();
+    _statusPoll?.cancel();
     _ssid.dispose();
     _password.dispose();
     super.dispose();
@@ -100,6 +113,7 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
       _step = _Step.provisioning;
       _error = null;
       _events.clear();
+      _settled = false;
     });
 
     // The board answers on the status characteristic, not on the write — drive
@@ -107,11 +121,22 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
     _statusSub?.cancel();
     _statusSub = _ble.statusEvents.listen(_onStatusEvent);
 
+    // Ask the board directly as well, rather than only waiting to be told.
+    _statusPoll?.cancel();
+    _statusPoll = Timer.periodic(const Duration(milliseconds: 700), (_) {
+      if (!mounted || _settled) return;
+      _ble.readStatus();
+    });
+
     _timeout?.cancel();
     _timeout = Timer(const Duration(seconds: 40), () {
       if (!mounted || _step != _Step.provisioning) return;
-      setState(() => _error =
-          'The board stopped responding. Check the Wi-Fi password and try again.');
+      _statusPoll?.cancel();
+      setState(() => _error = _chosenMode == RunMode.wifi
+          ? 'The board stopped responding. Check the Wi-Fi password and try '
+              'again.'
+          : 'The board stopped responding. It may have gone back to sleep — '
+              'tap RESET on it and try again.');
     });
 
     try {
@@ -130,16 +155,23 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
   }
 
   void _onStatusEvent(DeviceStatus status) {
-    if (!mounted || status.event == null) return;
+    if (!mounted || status.event == null || _settled) return;
+    // The poll re-reads the same value until something changes, so only the
+    // first sighting of an event is news.
+    if (_events.isNotEmpty && _events.last.eventPath == status.eventPath) return;
     setState(() => _events.add(status));
 
     switch (status.eventPath) {
       case 'prov/ble mode':
       case 'prov/done':
+        _settled = true;
         _timeout?.cancel();
+        _statusPoll?.cancel();
         _finish();
       case 'wifi/failed':
+        _settled = true;
         _timeout?.cancel();
+        _statusPoll?.cancel();
         // Keep the BLE link open so the user can retype the password; the board
         // stays in its previous mode, so nothing is lost (§4 step 4).
         setState(() {
@@ -148,7 +180,9 @@ class _BoardSetupWizardState extends State<BoardSetupWizard> {
           _step = _Step.wifiCredentials;
         });
       case 'prov/bad json':
+        _settled = true;
         _timeout?.cancel();
+        _statusPoll?.cancel();
         setState(() => _error = 'The board rejected the setup payload.');
     }
   }

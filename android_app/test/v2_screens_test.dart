@@ -1,5 +1,6 @@
 import 'package:battery_holder/app/app_state.dart';
 import 'package:battery_holder/design_system/theme.dart';
+import 'package:battery_holder/features/flash/flash_view.dart';
 import 'package:battery_holder/features/power/power_view.dart';
 import 'package:battery_holder/features/setup/board_setup_wizard.dart';
 import 'package:battery_holder/services/ble_manager.dart';
@@ -30,6 +31,29 @@ void main() {
     await tester.pump();
 
     expect(find.text('Board not connected'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Flash screen shows only the USB warning with nothing plugged in',
+      (tester) async {
+    final state = AppState();
+    state.selectBoard(previewESP32);
+
+    await tester.pumpWidget(host(const FlashView(), state));
+    await tester.pump();
+
+    expect(find.text('No board on the USB port'), findsOneWidget);
+
+    // Everything below the device card needs a board on the port, and offering
+    // it anyway buries the one thing that needs fixing.
+    expect(find.text('Flash board over USB'), findsNothing);
+    expect(find.text('Check board'), findsNothing);
+    expect(find.textContaining('Generate BIN file'), findsNothing);
+
+    // The over-the-air and local-file sections are gone for good.
+    expect(find.text('Over-the-air builds'), findsNothing);
+    expect(find.text('Local file'), findsNothing);
+    expect(find.text('Choose .bin file'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

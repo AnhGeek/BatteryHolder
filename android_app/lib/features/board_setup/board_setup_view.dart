@@ -45,7 +45,7 @@ class BoardSetupView extends StatelessWidget {
                 onPressed: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const PinConfigView()),
                 ),
-                child: const Text('Configure pins'),
+                child: const Text('Configure'),
               ),
             ],
           ],

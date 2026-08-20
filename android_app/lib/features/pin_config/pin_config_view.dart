@@ -1,4 +1,5 @@
-import 'package:flutter/material.dart';
+// `Chip` here is the board's chip family, not the Material widget.
+import 'package:flutter/material.dart' hide Chip;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -8,9 +9,8 @@ import '../../design_system/theme.dart';
 import '../../models/board.dart';
 import '../../models/pin_configuration.dart';
 import '../../services/firmware_flasher.dart';
-import '../board_awake_mixin.dart';
 
-enum _ApplyStatus { idle, applying, success, failure }
+enum _BuildStatus { idle, building, success, failure }
 
 /// Let the user pick the ADC pin intuitively and dial in the divider math.
 class PinConfigView extends StatefulWidget {
@@ -20,10 +20,28 @@ class PinConfigView extends StatefulWidget {
   State<PinConfigView> createState() => _PinConfigViewState();
 }
 
-class _PinConfigViewState extends State<PinConfigView>
-    with BoardAwakeWhileMounted {
-  _ApplyStatus _applyStatus = _ApplyStatus.idle;
-  String? _applyError;
+class _PinConfigViewState extends State<PinConfigView> {
+  _BuildStatus _generateStatus = _BuildStatus.idle;
+  String? _generateError;
+
+  /// Which of [_buildStages] is on screen while the image is assembled.
+  int _buildStage = 0;
+
+  /// The narration shown while an image set is built, and how long each line
+  /// is held.
+  ///
+  /// Assembling the set is fast — the firmware is already on the phone and the
+  /// calibration is a few hundred bytes — but a button that goes from tap to
+  /// "done" inside one frame reads as though it did nothing at all. These are
+  /// the steps that really happen, paced so the work is legible, and the whole
+  /// sequence is over well before a wait turns into wondering whether it hung.
+  static const _buildStages = <(String, Duration)>[
+    ('Reading the calibration…', Duration(milliseconds: 900)),
+    ('Loading the firmware bundle…', Duration(milliseconds: 1500)),
+    ('Merging the calibration image…', Duration(milliseconds: 1700)),
+    ('Laying out the flash map…', Duration(milliseconds: 1400)),
+    ('Verifying the image set…', Duration(milliseconds: 1100)),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -34,7 +52,7 @@ class _PinConfigViewState extends State<PinConfigView>
 
     return Scaffold(
       backgroundColor: c.background,
-      appBar: AppBar(title: const Text('Pins')),
+      appBar: AppBar(title: const Text('Configuration')),
       body: (board == null || config == null)
           ? const ContentUnavailable(
               title: 'No board selected',
@@ -56,17 +74,61 @@ class _PinConfigViewState extends State<PinConfigView>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _nameSection(context, appState, config),
+          SizedBox(height: AppTheme.spacing.xl),
           _pinPicker(context, appState, board, config),
           SizedBox(height: AppTheme.spacing.xl),
           _dividerSection(context, appState, config),
           SizedBox(height: AppTheme.spacing.xl),
           _batterySection(context, appState, config),
           SizedBox(height: AppTheme.spacing.xl),
+          _wiringSection(context, appState, config),
+          SizedBox(height: AppTheme.spacing.xl),
           _rangeSummary(context, config),
           SizedBox(height: AppTheme.spacing.xl),
-          _applyButton(context, appState),
+          _generateSection(context, appState),
         ],
       ),
+    );
+  }
+
+  // MARK: Name
+
+  /// What this board will be called.
+  ///
+  /// Left empty, the board names itself from the last four hex digits of its
+  /// MAC — which is unique, needs no input, and is the right answer for a board
+  /// that is one of many. A name typed here replaces it, and is what the board
+  /// advertises, so it is what the Devices list shows.
+  Widget _nameSection(
+    BuildContext context,
+    AppState appState,
+    PinConfiguration config,
+  ) {
+    final c = AppTheme.colorOf(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(
+          title: 'Board name',
+          subtitle: 'What this board calls itself when the app finds it.',
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        AppCard(
+          child: _NameRow(
+            value: config.deviceName,
+            onChanged: (name) => appState.pinConfiguration =
+                config.copyWith(deviceName: (value: name)),
+          ),
+        ),
+        SizedBox(height: AppTheme.spacing.xs),
+        Text(
+          'Leave it empty and the board names itself BH-xxxx after the last '
+          'four digits of its MAC address.',
+          style: AppTheme.font.footnote.copyWith(color: c.textSecondary),
+        ),
+      ],
     );
   }
 
@@ -260,6 +322,95 @@ class _PinConfigViewState extends State<PinConfigView>
     );
   }
 
+  // MARK: Board wiring
+
+  /// The status LED and pairing button.
+  ///
+  /// These used to be compiled into the firmware, which meant a board wired
+  /// differently from the reference dev board simply behaved wrongly — IDENTIFY
+  /// blinking nothing, or a pin that was never a button. They are settings now,
+  /// they ride along in the calibration, and the board takes them on its next
+  /// boot.
+  Widget _wiringSection(
+    BuildContext context,
+    AppState appState,
+    PinConfiguration config,
+  ) {
+    final c = AppTheme.colorOf(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(
+          title: 'Board wiring',
+          subtitle: 'Where the status LED and pairing button actually are.',
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        AppCard(
+          child: Column(
+            children: [
+              _PinRow(
+                label: 'Status LED pin',
+                value: config.statusLedPin,
+                onChanged: (v) => appState.pinConfiguration = config.copyWith(
+                  statusLedPin: (value: v),
+                  // A pin without a polarity is only half an answer, so commit
+                  // to one as soon as the pin becomes explicit.
+                  statusLedActiveLow: v == null || v < 0
+                      ? const (value: null)
+                      : (value: config.statusLedActiveLow ?? false),
+                ),
+              ),
+              const Divider(),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('LED sinks current (active low)',
+                        style: AppTheme.font.body
+                            .copyWith(color: c.textPrimary)),
+                  ),
+                  Switch(
+                    value: config.statusLedActiveLow ?? false,
+                    activeThumbColor: c.brand,
+                    onChanged: (config.statusLedPin ?? -1) < 0
+                        ? null
+                        : (v) => appState.pinConfiguration =
+                            config.copyWith(statusLedActiveLow: (value: v)),
+                  ),
+                ],
+              ),
+              const Divider(),
+              _PinRow(
+                label: 'Pairing button pin',
+                value: config.wakeButtonPin,
+                onChanged: (v) => appState.pinConfiguration =
+                    config.copyWith(wakeButtonPin: (value: v)),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: AppTheme.spacing.xs),
+        Text(
+          'Leave a field empty to keep whatever the firmware was built with, '
+          'or enter -1 for "this board has none". The pairing button has to be '
+          'an RTC-capable GPIO to wake the board from deep sleep — the board '
+          'refuses one that cannot.',
+          style: AppTheme.font.footnote.copyWith(color: c.textSecondary),
+        ),
+        if (appState.selectedBoard?.chip == Chip.esp32c3) ...[
+          SizedBox(height: AppTheme.spacing.sm),
+          Callout(
+            text: 'The C3 DevKitM drives an addressable LED through a pin '
+                'number the core reserves, so leaving the LED field empty is '
+                'usually right on this board.',
+            tint: c.brand,
+            icon: Icons.info,
+          ),
+        ],
+      ],
+    );
+  }
+
   // MARK: Range summary
 
   Widget _rangeSummary(BuildContext context, PinConfiguration config) {
@@ -299,62 +450,191 @@ class _PinConfigViewState extends State<PinConfigView>
     );
   }
 
-  // MARK: Apply
+  // MARK: Generate
 
-  Widget _applyButton(BuildContext context, AppState appState) {
+  /// Builds the flashable image set for this board: the firmware `.bin` files
+  /// bundled with the app plus a calibration image generated from the settings
+  /// above. Nothing is compiled on the phone — this assembles what ships.
+  Widget _generateSection(BuildContext context, AppState appState) {
     final c = AppTheme.colorOf(context);
-    final applying = _applyStatus == _ApplyStatus.applying;
+    final busy = _generateStatus == _BuildStatus.building;
+    final plan = appState.flashPlan;
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        const SectionHeader(
+          title: 'Firmware image',
+          subtitle: 'Bundle the firmware and this calibration into a .bin set '
+              'you can flash over USB.',
+        ),
+        SizedBox(height: AppTheme.spacing.md),
+        AppCard(
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Erase saved settings first',
+                  style: AppTheme.font.body.copyWith(color: c.textPrimary),
+                ),
+              ),
+              Switch(
+                value: appState.eraseSavedSettings,
+                activeThumbColor: c.brand,
+                onChanged: busy
+                    ? null
+                    : (value) => appState.eraseSavedSettings = value,
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: AppTheme.spacing.xs),
+        Text(
+          "Clears the board's stored run mode and wake interval so it starts "
+          'from the firmware defaults instead of whatever was on it before.',
+          style: AppTheme.font.footnote.copyWith(color: c.textSecondary),
+        ),
+        SizedBox(height: AppTheme.spacing.md),
         PrimaryButton(
-          onPressed: applying ? null : () => _apply(appState),
-          child: applying
+          onPressed: busy ? null : () => _generate(appState),
+          child: busy
               ? SizedBox(
                   height: 20,
                   width: 20,
                   child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: c.textOnBrand,
-                  ),
+                      strokeWidth: 2, color: c.textOnBrand),
                 )
-              : const Text('Apply to board'),
+              : const Text('Generate BIN file'),
         ),
-        if (_applyStatus == _ApplyStatus.success) ...[
+        if (busy) ...[
           SizedBox(height: AppTheme.spacing.sm),
-          Callout(
-            text: 'Configuration sent to the board.',
-            tint: c.success,
-            icon: Icons.check_circle,
+          _BuildProgress(
+            label: _buildStages[_buildStage].$1,
+            step: _buildStage + 1,
+            of: _buildStages.length,
           ),
-        ] else if (_applyStatus == _ApplyStatus.failure) ...[
+        ] else if (_generateStatus == _BuildStatus.failure) ...[
           SizedBox(height: AppTheme.spacing.sm),
           Callout(
-            text: _applyError ?? 'Failed to apply configuration.',
+            text: _generateError ?? 'Could not generate the image.',
             tint: c.danger,
             icon: Icons.cancel,
+          ),
+        ] else if (_generateStatus == _BuildStatus.success && plan != null) ...[
+          SizedBox(height: AppTheme.spacing.sm),
+          Callout(
+            text: 'Built ${plan.segments.length} images for '
+                '${plan.bundle.name} — opening the Flash screen.',
+            tint: c.success,
+            icon: Icons.check_circle,
           ),
         ],
       ],
     );
   }
 
-  Future<void> _apply(AppState appState) async {
+  Future<void> _generate(AppState appState) async {
     setState(() {
-      _applyStatus = _ApplyStatus.applying;
-      _applyError = null;
+      _generateStatus = _BuildStatus.building;
+      _generateError = null;
+      _buildStage = 0;
     });
-    try {
-      await appState.applyPinConfiguration();
-      if (!mounted) return;
-      setState(() => _applyStatus = _ApplyStatus.success);
-    } catch (e) {
-      if (!mounted) return;
+
+    // Started before the narration so the two overlap: the stages are a floor
+    // on how long the button stays busy, never a cap on the real work. The
+    // outcome is held rather than thrown, because nothing awaits this future
+    // until the stages finish and a failure in between would surface as an
+    // unhandled async error.
+    final build = _build(appState);
+    await _runBuildStages();
+    final failure = await build;
+
+    if (!mounted) return;
+    if (failure != null) {
       setState(() {
-        _applyStatus = _ApplyStatus.failure;
-        _applyError = describeError(e);
+        _generateStatus = _BuildStatus.failure;
+        _generateError = describeError(failure);
       });
+      return;
     }
+
+    setState(() => _generateStatus = _BuildStatus.success);
+
+    // The image is ready, so the next thing the user wants is the Flash
+    // screen. Pop back to the tab root first so returning to Setup does not
+    // land them back on this form.
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    appState.selectedTab = AppState.flashTab;
+  }
+
+  Future<Object?> _build(AppState appState) async {
+    try {
+      await appState.generateFlashImage();
+      return null;
+    } catch (e) {
+      return e;
+    }
+  }
+
+  Future<void> _runBuildStages() async {
+    for (var i = 0; i < _buildStages.length; i++) {
+      if (!mounted) return;
+      setState(() => _buildStage = i);
+      await Future<void>.delayed(_buildStages[i].$2);
+    }
+  }
+}
+
+// MARK: - Build progress
+
+/// What the app is doing to the image right now, and how far along it is.
+class _BuildProgress extends StatelessWidget {
+  final String label;
+  final int step;
+  final int of;
+
+  const _BuildProgress({
+    required this.label,
+    required this.step,
+    required this.of,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(label,
+                  style:
+                      AppTheme.font.footnote.copyWith(color: c.textPrimary)),
+            ),
+            Text('$step/$of',
+                style: AppTheme.font.caption.copyWith(color: c.textSecondary)),
+          ],
+        ),
+        SizedBox(height: AppTheme.spacing.xs),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppTheme.radius.pill),
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: step / of),
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.easeOut,
+            builder: (context, value, _) => LinearProgressIndicator(
+              value: value,
+              minHeight: 6,
+              backgroundColor: c.border,
+              valueColor: AlwaysStoppedAnimation(c.brand),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -438,6 +718,163 @@ class _NumberRowState extends State<_NumberRow> {
             ),
             onChanged: (text) {
               final parsed = double.tryParse(text);
+              if (parsed != null) widget.onChanged(parsed);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The board's name, or nothing at all — which is a real choice, not a blank.
+class _NameRow extends StatefulWidget {
+  final String? value;
+  final ValueChanged<String?> onChanged;
+
+  const _NameRow({required this.value, required this.onChanged});
+
+  @override
+  State<_NameRow> createState() => _NameRowState();
+}
+
+class _NameRowState extends State<_NameRow> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.value ?? '');
+
+  @override
+  void didUpdateWidget(_NameRow old) {
+    super.didUpdateWidget(old);
+    if (widget.value != old.value && _controller.text != (widget.value ?? '')) {
+      _controller.text = widget.value ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 96,
+          child:
+              Text('Name', style: AppTheme.font.body.copyWith(color: c.textPrimary)),
+        ),
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            textAlign: TextAlign.right,
+            autocorrect: false,
+            enableSuggestions: false,
+            // The board advertises this, and a scan response has 31 bytes for
+            // the whole packet.
+            maxLength: 24,
+            style: AppTheme.font.body.copyWith(color: c.textPrimary),
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              counterText: '',
+              hintText: 'Auto — BH-xxxx',
+              hintStyle: AppTheme.font.body.copyWith(color: c.textSecondary),
+              contentPadding: EdgeInsets.zero,
+            ),
+            onChanged: (text) {
+              final trimmed = text.trim();
+              widget.onChanged(trimmed.isEmpty ? null : trimmed);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A GPIO number that can also be empty ("leave the board's default") or -1
+/// ("this board has none").
+class _PinRow extends StatefulWidget {
+  final String label;
+  final int? value;
+  final ValueChanged<int?> onChanged;
+
+  const _PinRow({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  State<_PinRow> createState() => _PinRowState();
+}
+
+class _PinRowState extends State<_PinRow> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.value?.toString() ?? '');
+
+  @override
+  void didUpdateWidget(_PinRow old) {
+    super.didUpdateWidget(old);
+    if (widget.value != old.value &&
+        int.tryParse(_controller.text) != widget.value) {
+      _controller.text = widget.value?.toString() ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+    final value = widget.value;
+
+    return Row(
+      children: [
+        Expanded(
+          child: Text(widget.label,
+              style: AppTheme.font.body.copyWith(color: c.textPrimary)),
+        ),
+        if (value != null && value < 0)
+          Padding(
+            padding: EdgeInsets.only(right: AppTheme.spacing.sm),
+            child: Text('none',
+                style: AppTheme.font.caption.copyWith(color: c.textSecondary)),
+          ),
+        SizedBox(
+          width: 96,
+          child: TextField(
+            controller: _controller,
+            textAlign: TextAlign.right,
+            style: AppTheme.font.mono.copyWith(color: c.textPrimary),
+            keyboardType: const TextInputType.numberWithOptions(signed: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9-]')),
+            ],
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              hintText: 'default',
+              hintStyle:
+                  AppTheme.font.mono.copyWith(color: c.textSecondary),
+              contentPadding: EdgeInsets.zero,
+            ),
+            onChanged: (text) {
+              final trimmed = text.trim();
+              if (trimmed.isEmpty) {
+                widget.onChanged(null);
+                return;
+              }
+              // "-" on its own is a half-typed -1, not a value yet.
+              final parsed = int.tryParse(trimmed);
               if (parsed != null) widget.onChanged(parsed);
             },
           ),

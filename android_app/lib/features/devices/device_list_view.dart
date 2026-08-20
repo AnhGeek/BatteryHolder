@@ -84,15 +84,28 @@ class _BLEDeviceList extends StatelessWidget {
                     title: 'Bluetooth', subtitle: _statusText(ble)),
               ),
               SizedBox(
-                width: 96,
+                width: 108,
                 child: SecondaryButton(
                   onPressed: ble.isPoweredOn
                       ? () => ble.isScanning || ble.keepLooking
                           ? ble.stopScan()
                           : ble.startScan(keepLooking: true)
                       : null,
-                  child: Text(
-                      ble.isScanning || ble.keepLooking ? 'Stop' : 'Scan'),
+                  child: ble.isScanning || ble.keepLooking
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: c.brand),
+                            ),
+                            SizedBox(width: AppTheme.spacing.sm),
+                            const Text('Stop'),
+                          ],
+                        )
+                      : const Text('Scan'),
                 ),
               ),
             ],
@@ -104,18 +117,6 @@ class _BLEDeviceList extends StatelessWidget {
               text: 'Turn on Bluetooth to scan for boards.',
               tint: c.warning,
               icon: Icons.warning_amber_rounded,
-            ),
-            SizedBox(height: AppTheme.spacing.md),
-          ],
-
-          // Power screen is only meaningful on a connected v2 board.
-          if (ble.connection.isConnected && ble.supportsV2) ...[
-            SecondaryButton(
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const PowerView()),
-              ),
-              child: const LabelRow(
-                  text: 'Power & sleep', icon: Icons.battery_saver),
             ),
             SizedBox(height: AppTheme.spacing.md),
           ],
@@ -153,7 +154,11 @@ class _BLEDeviceList extends StatelessWidget {
           : 'Connected',
       // Expected, not a failure.
       ConnectionStatus.sleeping => 'Board went to sleep',
-      ConnectionStatus.failed => ble.connection.message ?? 'Failed',
+      // Scanning and connecting to a board that sleeps for minutes at a time
+      // fails routinely, so this screen never dresses it up as an error. The
+      // reason still reaches the screens where the user asked for a specific
+      // action (the setup wizard, power, flashing).
+      ConnectionStatus.failed => 'Not connected',
     };
   }
 }
@@ -164,6 +169,34 @@ class _BLEDeviceRow extends StatelessWidget {
 
   const _BLEDeviceRow({required this.ble, required this.device});
 
+  bool get _isConnectedToThis =>
+      ble.connection.isConnected && ble.connectedDeviceId == device.id;
+
+  /// Reachable means the board advertised in the last few seconds, i.e. it is
+  /// awake right now. Outside its wake window a connect attempt just times out.
+  bool get _canConnect => device.isReachable || _isConnectedToThis;
+
+  Future<void> _open(BuildContext context) async {
+    // A board that has never been provisioned goes straight into the wizard;
+    // anything else just connects.
+    if (device.needsSetup) {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => BoardSetupWizard(device: device),
+      ));
+      return;
+    }
+    await ble.connect(device);
+  }
+
+  /// Settings need a live link, so connect on the way in if necessary.
+  Future<void> _openSettings(BuildContext context) async {
+    if (!_isConnectedToThis) await ble.connect(device);
+    if (!context.mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const PowerView()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = AppTheme.colorOf(context);
@@ -172,17 +205,7 @@ class _BLEDeviceRow extends StatelessWidget {
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () {
-        // A board that has never been provisioned goes straight into the wizard;
-        // anything else just connects.
-        if (device.needsSetup) {
-          Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => BoardSetupWizard(device: device),
-          ));
-        } else {
-          ble.connect(device);
-        }
-      },
+      onTap: _canConnect ? () => _open(context) : null,
       child: AppCard(
         child: Row(
           children: [
@@ -213,7 +236,7 @@ class _BLEDeviceRow extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     [
-                      'Nearby',
+                      _canConnect ? 'Awake' : 'Asleep',
                       if (volts != null) '${volts.toStringAsFixed(2)} V',
                       'RSSI ${device.rssi} dBm',
                     ].join(' · '),
@@ -223,17 +246,55 @@ class _BLEDeviceRow extends StatelessWidget {
                 ],
               ),
             ),
+
             // Battery pill straight from the advertisement — no connect needed.
             if (soc != null) ...[
               SizedBox(width: AppTheme.spacing.sm),
               _Badge(text: '$soc%', tint: c.battery(soc / 100)),
             ],
-            Icon(Icons.chevron_right, color: c.textSecondary),
+
+            // Settings live on the board they configure, rather than as one
+            // button for whatever happens to be connected. A gear, not a
+            // battery: the screen behind it is where every board setting is,
+            // and the row already says what the battery is doing.
+            SizedBox(width: AppTheme.spacing.xs),
+            _IconAction(
+              icon: Icons.settings,
+              tooltip: 'Board settings',
+              tint: _canConnect ? c.brand : c.textSecondary.withValues(alpha: 0.5),
+              onPressed: _canConnect ? () => _openSettings(context) : null,
+            ),
           ],
         ),
       ),
     );
   }
+}
+
+class _IconAction extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final Color tint;
+  final VoidCallback? onPressed;
+
+  const _IconAction({
+    required this.icon,
+    required this.tooltip,
+    required this.tint,
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: tooltip,
+        child: IconButton(
+          icon: Icon(icon, color: tint),
+          onPressed: onPressed,
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+        ),
+      );
 }
 
 class _Badge extends StatelessWidget {
@@ -325,14 +386,8 @@ class _WiFiDeviceList extends StatelessWidget {
                           ],
                         ),
                       ),
-                      Icon(
-                        connected?.id == device.id
-                            ? Icons.check_circle
-                            : Icons.chevron_right,
-                        color: connected?.id == device.id
-                            ? c.brand
-                            : c.textSecondary,
-                      ),
+                      if (connected?.id == device.id)
+                        Icon(Icons.check_circle, color: c.brand),
                     ],
                   ),
                 ),
