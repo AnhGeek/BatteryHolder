@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show AssetBundle, rootBundle;
 
+import '../models/board_setup.dart';
 import '../models/calibration_image.dart';
 import '../models/firmware_bundle.dart';
 import '../models/pin_configuration.dart';
@@ -59,6 +60,7 @@ class FirmwareBundleRepository {
   Future<FlashPlan> buildPlan({
     required String boardId,
     required PinConfiguration config,
+    BoardSetup? setup,
     bool eraseSavedSettings = true,
     CalibrationImage? calibration,
   }) async {
@@ -102,7 +104,7 @@ class FirmwareBundleRepository {
     // Calibration last: it is the smallest write, and leaving it until the
     // firmware is in place means a board is only ever calibrated once it can
     // actually read the region.
-    final image = calibration ?? CalibrationImage.now(config);
+    final image = calibration ?? CalibrationImage.now(config, setup: setup);
     final blob = image.build();
     if (blob.length > board.calibration.size) {
       throw const FirmwareBundleException(
@@ -118,6 +120,7 @@ class FirmwareBundleRepository {
       bundle: board,
       segments: segments,
       calibrationPayload: image.payload,
+      setup: image.setup ?? setup,
     );
   }
 

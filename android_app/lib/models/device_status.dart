@@ -169,7 +169,72 @@ class PowerConfig {
         bleInWifi: bleInWifi ?? this.bleInWifi,
       );
 
+  @override
+  bool operator ==(Object other) =>
+      other is PowerConfig &&
+      other.sleepEnabled == sleepEnabled &&
+      other.bleWakeSec == bleWakeSec &&
+      other.bleWindowMs == bleWindowMs &&
+      other.bleIdleMs == bleIdleMs &&
+      other.wifiReportSec == wifiReportSec &&
+      other.wifiWindowMs == wifiWindowMs &&
+      other.bleInWifi == bleInWifi;
+
+  @override
+  int get hashCode => Object.hash(sleepEnabled, bleWakeSec, bleWindowMs,
+      bleIdleMs, wifiReportSec, wifiWindowMs, bleInWifi);
+
   /// The reporting interval that actually applies in [mode].
   int intervalSecFor(RunMode mode) =>
       mode == RunMode.wifi ? wifiReportSec : bleWakeSec;
+
+  /// The same block with [seconds] applied to whichever interval [mode] uses.
+  PowerConfig withIntervalFor(RunMode mode, int seconds) => mode == RunMode.wifi
+      ? copyWith(wifiReportSec: seconds)
+      : copyWith(bleWakeSec: seconds);
+
+  /// Every wake interval the app offers, in seconds.
+  ///
+  /// The firmware accepts any value, so this is a menu rather than a
+  /// constraint. It runs from "fast enough to watch a charge finish" to "one
+  /// reading a day", which is the whole range a pack monitor is ever asked
+  /// for, and both the pre-flash Configuration screen and the live Board
+  /// settings screen offer exactly this list — a board must never be able to
+  /// hold an interval its own settings screen cannot show.
+  static const intervalOptions = <int>[
+    30,
+    60,
+    120,
+    300,
+    600,
+    900,
+    1800,
+    3600,
+    7200,
+    21600,
+    43200,
+    86400,
+  ];
+
+  static String intervalLabel(int seconds) {
+    if (seconds < 60) return '$seconds s';
+    if (seconds < 3600) return '${seconds ~/ 60} min';
+    if (seconds < 86400) return '${seconds ~/ 3600} h';
+    return '${seconds ~/ 86400} d';
+  }
+
+  /// Deliberately vague: real runtime depends on the pack, and quoting an exact
+  /// number the firmware cannot promise would be worse than a range.
+  static String batteryHint(int seconds) => switch (seconds) {
+        < 60 => 'Wakes twice a minute — hours to days of runtime. Use it while '
+            'you are watching a charge, not to leave a board on.',
+        <= 60 => 'Wakes every minute — expect days of runtime, not weeks.',
+        <= 300 => 'A good balance: weeks of runtime on a typical 18650.',
+        <= 900 => 'Long runtime — readings arrive up to 15 minutes apart.',
+        <= 3600 =>
+          'Longest practical runtime. Readings arrive hourly, so short dips '
+              'are missed.',
+        _ => 'Months of runtime, and the board is unreachable in between — you '
+            'will be pressing RESET to talk to it.',
+      };
 }

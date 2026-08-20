@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'board_setup.dart';
 import 'pin_configuration.dart';
 
 /// The calibration image the phone writes into the board's flash.
@@ -24,6 +25,12 @@ import 'pin_configuration.dart';
 ///       16     N  UTF-8 JSON: a PinConfiguration plus "stamp"
 /// ```
 ///
+/// The JSON carries the [BoardSetup] as well — a `power` block with the run
+/// mode folded into it, and Wi-Fi credentials when the board is meant to join
+/// a network. That is what makes the image self-sufficient: the board wakes up
+/// already claimed, in the mode it was built for, instead of coming off the
+/// cable unprovisioned and waiting to be asked over Bluetooth.
+///
 /// The `stamp` is what keeps the region from fighting the board: the firmware
 /// mirrors the stamp it applied into NVS, so a board reconfigured later over
 /// Bluetooth keeps the newer settings instead of being pulled back here on
@@ -36,13 +43,24 @@ class CalibrationImage {
 
   final PinConfiguration config;
 
+  /// Run mode, timers and credentials. Omitted only by callers that genuinely
+  /// have nothing to say about behaviour, which leaves the board on its
+  /// compiled-in defaults — i.e. unclaimed.
+  final BoardSetup? setup;
+
   /// Seconds since the epoch, the moment the image was generated.
   final int stamp;
 
-  const CalibrationImage({required this.config, required this.stamp});
+  const CalibrationImage({
+    required this.config,
+    required this.stamp,
+    this.setup,
+  });
 
-  factory CalibrationImage.now(PinConfiguration config) => CalibrationImage(
+  factory CalibrationImage.now(PinConfiguration config, {BoardSetup? setup}) =>
+      CalibrationImage(
         config: config,
+        setup: setup,
         stamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
       );
 
@@ -50,6 +68,7 @@ class CalibrationImage {
   /// characteristic takes, plus the stamp.
   Map<String, dynamic> get payload => {
         ...config.toJson(),
+        ...?setup?.toCalibrationJson(),
         'stamp': stamp,
       };
 

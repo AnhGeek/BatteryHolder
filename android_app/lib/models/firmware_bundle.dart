@@ -1,4 +1,6 @@
 import 'dart:typed_data';
+import 'board_setup.dart';
+import 'device_status.dart';
 
 /// The prebuilt firmware that ships inside the app, described by
 /// `assets/firmware/manifest.json`.
@@ -194,11 +196,20 @@ class FlashPlan {
   /// hand-off over the serial console.
   final Map<String, dynamic> calibrationPayload;
 
+  /// The behaviour baked into that calibration: run mode, timers, credentials.
+  /// Null only for a plan built without one, which is a board that will come
+  /// up unclaimed.
+  final BoardSetup? setup;
+
   const FlashPlan({
     required this.bundle,
     required this.segments,
     required this.calibrationPayload,
+    this.setup,
   });
 
   int get totalBytes => segments.fold(0, (sum, s) => sum + s.size);
+
+  /// The mode the board will boot into once this image is on it.
+  RunMode get bootMode => setup?.mode ?? RunMode.pairing;
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/device_status.dart';
 import '../models/firmware_bundle.dart';
 import 'esp_loader.dart';
 import 'serial_console.dart';
@@ -58,17 +59,24 @@ class UsbFlashLogEntry {
   UsbFlashLogEntry(this.message, {this.isError = false}) : at = DateTime.now();
 }
 
-/// Drives a brand-new board from bare metal to calibrated, over the cable.
+/// Drives a brand-new board from bare metal to set up and running, over the
+/// cable.
 ///
 /// A fresh board has no Bluetooth pairing and no Wi-Fi credentials, so USB is
-/// the only way in. The sequence is deliberately split in two, with the board
-/// parked in its ROM bootloader in between:
+/// the only way in. Everything it needs is in the image: the calibration region
+/// carries the run mode, the wake timers and any Wi-Fi credentials alongside
+/// the sensing chain, so the board applies the lot on the boot that follows the
+/// flash and comes up already claimed. Flash, reset, done — the console steps
+/// below confirm that, they do not cause it.
+///
+/// The sequence is deliberately split in two, with the board parked in its ROM
+/// bootloader in between:
 ///
 ///  1. [flash] — reset into the bootloader, identify the chip, blank the saved
 ///     settings, write the bundled images and the calibration region, then read
 ///     every one of them back and compare checksums. **Nothing reboots.**
 ///  2. [rebootAndConfirm] — only once step 1 reported success: pulse EN, then
-///     hand the same calibration over the serial console and read it back.
+///     read back over the serial console what the board came up as.
 ///
 /// The split exists because a reset is the one irreversible thing in the
 /// sequence. A board that rebooted straight after writing takes its USB port
@@ -248,10 +256,15 @@ class UsbFlashService extends ChangeNotifier {
     } catch (e) {
       // The firmware is already verified on the board; only the confirmation
       // failed. Say precisely that instead of throwing the flash away.
+      //
+      // This used to be a half-truth: the run mode was set by a console command
+      // sent *after* this reset, so a lost port meant a board that reported
+      // "ready" and then turned up unclaimed. The mode is in the image now, so
+      // there is genuinely nothing left for the cable to do.
       _append(
-        '${_describe(e)} The firmware and calibration were already verified in '
-        'flash, so the board is running them — this step was only the '
-        'read-back.',
+        '${_describe(e)} The firmware, the calibration and the run mode were '
+        'all verified in flash before this reset, so the board is running them '
+        '— this step was only the read-back.',
         isError: true,
       );
       _append(
@@ -483,9 +496,6 @@ class UsbFlashService extends ChangeNotifier {
     return device;
   }
 
-  /// Whether the USB session also provisions the board into Bluetooth mode.
-  bool provisionAsBle = true;
-
   /// Writes the calibration over the console and reads it back.
   Future<void> _handOverCalibration(
     SerialConsole console,
@@ -525,30 +535,37 @@ class UsbFlashService extends ChangeNotifier {
           'x${calibration['calibrationFactor']}.');
     }
 
-    if (provisionAsBle) await _provisionOverConsole(console);
-
     _boardStatus = await console.request({'cmd': 'status'});
+    _reportRunMode(plan);
   }
 
-  /// Claims the board into Bluetooth mode over the cable.
+  /// Says which mode the board actually came up in, and whether that is the
+  /// mode the image asked for.
   ///
-  /// The same handler the BLE provisioning characteristic runs, reached through
-  /// the serial console — so a board comes out of the USB session already set
-  /// up, instead of sitting in pairing mode waiting to be asked the one
-  /// question the cable could have asked itself.
-  Future<void> _provisionOverConsole(SerialConsole console) async {
-    try {
-      final reply = await console.request({'cmd': 'prov', 'mode': 'ble'});
-      if (reply['ok'] != true) {
-        _append('The board did not take Bluetooth mode over USB; set it up '
-            'from the Devices tab instead.');
-        return;
-      }
-      _append('Set to Bluetooth mode — no Devices setup needed.');
-    } on SerialConsoleException {
-      _append('Could not set the run mode over USB; the Devices tab still '
-          'can.');
+  /// Nothing here *sets* the mode. The image does that: the calibration region
+  /// carries the run mode and the timers, and the firmware applies them on the
+  /// boot that follows the flash, before it ever advertises. This is the
+  /// read-back that proves it — and the one place a mismatch (an image built
+  /// for a board this firmware is too old to understand) can be seen.
+  void _reportRunMode(FlashPlan plan) {
+    final wanted = plan.setup?.mode;
+    final actual = _boardStatus?['mode'];
+    if (wanted == null) return;
+
+    if (actual == wanted.name) {
+      _append(wanted == RunMode.pairing
+          ? 'The board is up in pairing mode, as the image asked — set it up '
+              'from the Devices tab when you have decided how it should report.'
+          : 'The board is up in ${wanted.displayName} mode, straight from the '
+              'image. Nothing left to set up.');
+      return;
     }
+    _append(
+      'The image asked for ${wanted.displayName} mode but the board reports '
+      '"$actual". That means firmware older than 2.2.0, which ignores the run '
+      'mode in the calibration region — set this board up from the Devices tab.',
+      isError: true,
+    );
   }
 
   void _assertChipMatches(EspChip detected, FirmwareBundle bundle) {

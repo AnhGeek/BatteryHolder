@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/battery_reading.dart';
 import '../models/board.dart';
+import '../models/board_setup.dart';
 import '../models/calibration_image.dart';
 import '../models/firmware_bundle.dart';
 import '../models/firmware_image.dart';
@@ -208,6 +209,9 @@ class AppState extends ChangeNotifier {
         !board.supportedTransports.contains(_activeTransport)) {
       _activeTransport = board.supportedTransports.first;
     }
+    // An ESP8266 has no BLE radio, so "Bluetooth mode" is not a preference to
+    // keep holding on one — it is a mode the board could never enter.
+    _boardSetup = _boardSetup.forBoard(board);
     notifyListeners();
   }
 
@@ -303,19 +307,19 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Whether the USB session also claims the board into Bluetooth mode.
+  /// How the board should behave once it is running: run mode, wake interval,
+  /// sleep windows, Wi-Fi credentials.
   ///
-  /// A board is born in `pairing` mode and stays there until something
-  /// provisions it — that is deliberate, since the run mode decides its power
-  /// budget and a board must never join a network nobody gave it. But the
-  /// cable can answer that question as easily as Bluetooth can, and for a
-  /// Bluetooth-only board it is the same one-word answer every time. Turning
-  /// this off, or choosing Wi-Fi, leaves the decision to the Devices wizard.
-  bool _provisionOverUsb = true;
-  bool get provisionOverUsb => _provisionOverUsb;
+  /// A board used to be born in `pairing` mode and stay there until something
+  /// provisioned it over a live link, which meant the answer to "what is this
+  /// board for" was asked *after* the flash — over Bluetooth, to a board that
+  /// sleeps most of the time. It is asked before the flash now and travels in
+  /// the calibration region, so the image itself claims the board.
+  BoardSetup _boardSetup = const BoardSetup();
+  BoardSetup get boardSetup => _boardSetup;
 
-  set provisionOverUsb(bool value) {
-    _provisionOverUsb = value;
+  set boardSetup(BoardSetup value) {
+    _boardSetup = value;
     notifyListeners();
   }
 
@@ -333,10 +337,18 @@ class AppState extends ChangeNotifier {
       throw const FirmwareBundleException('Choose a board first.');
     }
 
-    final calibration = CalibrationImage.now(config);
+    final setup = _boardSetup.forBoard(board);
+    if (!setup.isComplete) {
+      throw const FirmwareBundleException(
+          'Name the Wi-Fi network this board should join, or set it to '
+          'Bluetooth mode.');
+    }
+
+    final calibration = CalibrationImage.now(config, setup: setup);
     final plan = await firmwareBundles.buildPlan(
       boardId: board.id,
       config: config,
+      setup: setup,
       eraseSavedSettings: _eraseSavedSettings,
       calibration: calibration,
     );
