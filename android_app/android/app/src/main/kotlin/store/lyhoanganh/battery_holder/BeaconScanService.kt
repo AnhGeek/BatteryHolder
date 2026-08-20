@@ -56,11 +56,26 @@ class BeaconScanService : Service() {
         private const val MARKER = 0x42.toByte()
 
         /**
-         * A board repeats the same payload for its whole wake window, so log a
-         * board again only when the payload changes or this long has passed.
-         * With 5-minute wakes that works out at roughly one row per wake.
+         * A gap this long between sightings means the board slept in between,
+         * so the next one starts a new wake and earns a row.
+         *
+         * The board re-reads its ADC and rebuilds the advertisement every 10 s
+         * while it is awake, so sightings inside one wake arrive ~10 s apart
+         * and almost never carry the same payload twice. Collapsing on the gap
+         * rather than on the payload is what keeps this at one row per wake:
+         * the log is meant to be a wake history, not an ADC trace.
+         *
+         * Sits between that 10 s refresh and the shortest wake interval the app
+         * offers (30 s), so no wake is ever mistaken for a continuation.
          */
-        private const val MIN_INTERVAL_MS = 60_000L
+        private const val WAKE_GAP_MS = 25_000L
+
+        /**
+         * A board that never sleeps — one held awake by an open BLE session —
+         * would otherwise log nothing after its first sighting. Record it this
+         * often so the row count still tracks something.
+         */
+        private const val MAX_QUIET_MS = 15 * 60_000L
 
         private const val CHANNEL_ID = "beacon_scan"
         private const val NOTIFICATION_ID = 42
@@ -74,8 +89,11 @@ class BeaconScanService : Service() {
 
     private var scanner: BluetoothLeScanner? = null
 
-    /** deviceId -> (last write time, payload fingerprint) for throttling. */
-    private val lastWrite = HashMap<String, Pair<Long, String>>()
+    /** What we know about a board between sightings, for the wake test below. */
+    private data class Seen(val at: Long, val written: Long, val flags: Int)
+
+    /** deviceId -> its last sighting, written or not. */
+    private val lastSeen = HashMap<String, Seen>()
 
     /** Rows appended since the last trim, so we don't stat the file every hit. */
     private var appendsSinceTrim = 0
@@ -191,16 +209,22 @@ class BeaconScanService : Service() {
         val deviceId = result.device?.address ?: return
         val name = record.deviceName ?: ""
 
-        val fingerprint = "$flags|$millivolts|$soc"
         val now = System.currentTimeMillis()
-        val previous = lastWrite[deviceId]
-        if (previous != null &&
-            previous.second == fingerprint &&
-            now - previous.first < MIN_INTERVAL_MS
-        ) {
-            return
-        }
-        lastWrite[deviceId] = Pair(now, fingerprint)
+        val previous = lastSeen[deviceId]
+        // First sighting, a fresh wake, a mode change (§2.1 flags) or a board
+        // that has stayed awake too long to leave unrecorded.
+        val worthLogging = previous == null ||
+            now - previous.at >= WAKE_GAP_MS ||
+            flags != previous.flags ||
+            now - previous.written >= MAX_QUIET_MS
+        // Every sighting moves the clock, logged or not: the gap that matters
+        // is the one the board was invisible for, not the one since a row.
+        lastSeen[deviceId] = Seen(
+            at = now,
+            written = if (worthLogging) now else previous!!.written,
+            flags = flags,
+        )
+        if (!worthLogging) return
 
         append(
             buildString {
