@@ -4,7 +4,7 @@ Firmware that implements the BatteryHolder device contract so the apps have a
 real board to talk to. Flash it once over USB; after that the app — or the
 backend — can update it over the air.
 
-Current version: **2.1.0**. The full contract lives in
+Current version: **2.2.0**. The full contract lives in
 [../docs/DEVICE_PROTOCOL.md](../docs/DEVICE_PROTOCOL.md).
 
 Flashing it is no longer a workstation job either: the Android app ships these
@@ -121,9 +121,16 @@ The sketch picks defaults per chip; override any of them with a `-D` build flag.
 | `WAKE_BUTTON_PIN` | 0 | *disabled* | C3/S3 pads keep no internal pull-up across deep sleep, so an unwired GPIO floats and wakes the board every cycle. Wire a button **and a 10k pull-up** to an RTC GPIO (0–5), then pass `-DWAKE_BUTTON_PIN=<n>`. |
 | `STATUS_LED_PIN` | 2 | `RGB_BUILTIN` | Taken from the board variant where there is one: core 3.x drives the C3/S3 DevKitM addressable LED through `digitalWrite(RGB_BUILTIN, …)`, so IDENTIFY works there out of the box. The "ESP32 Dev Module" variant declares no LED macro, so the classic build assumes the DevKitC's GPIO2 — pass `-DSTATUS_LED_PIN=-1` on a bare module, or `-DSTATUS_LED_PIN=<n>` (plus `-DSTATUS_LED_ACTIVE_LOW=1` if it sinks) for a discrete one. A board with no LED reports `led: false` and the app says so instead of pretending to blink. |
 
-With the button disabled, timer wake still works and a factory-fresh board still
-comes up in pairing mode — you just cannot force pairing on a board that is
-already provisioned without a factory reset from the app.
+With the button disabled, timer wake still works and a board flashed with no run
+mode still comes up in pairing mode — you just cannot force pairing on a board
+that is already claimed without a factory reset from the app.
+
+Note that "factory-fresh" no longer means "pairing mode". The calibration region
+the phone writes over USB carries a `power` block with the run mode and the wake
+timers (DEVICE_PROTOCOL.md §6), and `applyCalibRegion()` folds it into NVS on
+the first boot after the flash. A board therefore comes up in the mode it was
+flashed for and advertises as provisioned straight away; pairing mode is what
+you get when the image deliberately left the question open.
 
 ## Waking a sleeping board
 

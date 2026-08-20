@@ -1,20 +1,29 @@
 // BatteryHolder reference firmware for ESP32 (WROOM / C3 / S3).
 //
-// Three run modes, selected by what the phone provisions over BLE:
+// Three run modes:
 //
 //   PAIRING  factory / button-forced. BLE advertises continuously for
 //            PAIRING_WINDOW_MS so the app can find and claim the board.
 //   BLE      low-power local mode. Each wake: sample -> advertise -> serve the
 //            app if it connects -> deep sleep for cfg.bleWakeSec.
-//   WIFI     cloud mode, Tuya style. Credentials + a device token arrive over
-//            BLE once; after that the board joins Wi-Fi on every wake, POSTs
+//   WIFI     cloud mode, Tuya style. The board joins Wi-Fi on every wake, POSTs
 //            telemetry to the backend, obeys the commands it gets back, then
 //            deep sleeps for cfg.wifiReportSec.
 //
-// A board that has never been provisioned is reached over the USB cable
-// instead: the phone flashes this sketch over UART, drops the calibration into
-// a dedicated flash region outside the program image, and can then drive the
-// same commands over a JSON-per-line serial console that Bluetooth exposes.
+// The mode is chosen one of two ways, and both land in the same NVS field:
+//
+//   * in the image — the calibration region the phone writes over USB carries a
+//     power block (run mode, wake timers) and, for a Wi-Fi board, credentials.
+//     applyCalibRegion() folds them in on the first boot after the flash, so a
+//     board comes off the cable already claimed. This is the normal path: the
+//     phone knows what the board is for before the board exists.
+//   * over a live link — the BLE provisioning characteristic or the serial
+//     console, for changing a board that is already running.
+//
+// A board that has never been set up is reached over the USB cable: the phone
+// flashes this sketch over UART, drops the configuration into a dedicated flash
+// region outside the program image, and can then drive the same commands over a
+// JSON-per-line serial console that mirrors Bluetooth.
 //
 // Libraries: ArduinoJson (v6). BLE / WebServer / mDNS / Update / HTTPClient
 // ship with the ESP32 core.
@@ -50,7 +59,7 @@
 #endif
 
 // ---- Identity ----
-static const char* FW_VERSION = "2.1.0";
+static const char* FW_VERSION = "2.2.0";
 static const char* HOSTNAME   = "batteryholder";
 
 // ---- Hardware ----
@@ -400,8 +409,18 @@ void applyChemistry(const String& name) {
 }
 
 // Apply a JSON PinConfiguration payload (from BLE, HTTP or the cloud).
+// How much ArduinoJson needs for one calibration payload.
+//
+// The region carries the sensing chain, the board wiring, the power block (run
+// mode and wake timers) and, for a Wi-Fi board, credentials — around 620 bytes
+// of JSON at its largest. Deserializing from a String copies every key and
+// value into the document, so the capacity has to clear the text with room for
+// the object tree on top. These live on the heap rather than the stack: two
+// static documents this size in one frame is most of the loop task's 8 KB.
+static const size_t CALIB_DOC_SIZE = 1536;
+
 bool applyConfigJson(const String& body) {
-  StaticJsonDocument<640> doc;
+  DynamicJsonDocument doc(CALIB_DOC_SIZE);
   if (deserializeJson(doc, body)) return false;
   if (doc.containsKey("adcResolutionBits")) cfg.adcResBits    = doc["adcResolutionBits"];
   if (doc.containsKey("adcRefVoltage"))     cfg.adcRefVoltage = doc["adcRefVoltage"];
@@ -581,7 +600,7 @@ void applyCalibRegion() {
   String payload;
   if (!readCalibRegion(payload)) return;
 
-  StaticJsonDocument<768> doc;
+  DynamicJsonDocument doc(CALIB_DOC_SIZE);
   if (deserializeJson(doc, payload)) return;
   uint32_t stamp = doc["stamp"] | 0UL;
 
@@ -591,12 +610,47 @@ void applyCalibRegion() {
   if (stamp != 0 && stamp == applied) return;   // already in NVS
 
   if (!applyConfigJson(payload)) return;
+
+  // Behaviour, not just wiring. The power block carries the run mode and the
+  // wake interval, and the credentials ride alongside it, so a board flashed
+  // for Wi-Fi joins its network on this very first boot. Everything the phone
+  // used to have to ask for over a live link is already here.
   if (doc.containsKey("power")) applyPowerJson(doc["power"].as<JsonObjectConst>());
+
+  bool creds = false;
+  if (doc.containsKey("ssid")) {
+    strlcpy(cfg.ssid, doc["ssid"] | "", sizeof(cfg.ssid));
+    creds = true;
+  }
+  if (doc.containsKey("password")) {
+    strlcpy(cfg.pass, doc["password"] | "", sizeof(cfg.pass));
+    creds = true;
+  }
+  if (doc.containsKey("backendUrl")) {
+    strlcpy(cfg.backendUrl, doc["backendUrl"] | "", sizeof(cfg.backendUrl));
+    creds = true;
+  }
+  if (doc.containsKey("deviceToken")) {
+    strlcpy(cfg.token, doc["deviceToken"] | "", sizeof(cfg.token));
+    creds = true;
+  }
+  if (creds) saveCloud();
+
+  // A board told to run on Wi-Fi with no network named would boot, fail to
+  // join, and be unreachable until someone noticed. Refusing the mode leaves it
+  // advertising, which is at least a board the app can still find.
+  if (cfg.mode == MODE_WIFI && !hasWifiCreds()) {
+    Serial.println(F("[calib] wifi mode asked for without credentials — staying unclaimed"));
+    cfg.mode = MODE_PAIRING;
+    savePower();
+  }
 
   prefs.begin("bh", false);
   prefs.putULong("calstamp", stamp);
   prefs.end();
-  Serial.printf("[calib] applied stamp=%u pin=%d\n", stamp, cfg.adcPin);
+  Serial.printf("[calib] applied stamp=%u pin=%d mode=%u wake=%us\n",
+                stamp, cfg.adcPin, cfg.mode,
+                cfg.mode == MODE_WIFI ? cfg.wifiReportSec : cfg.bleWakeSec);
 }
 
 // Power/mode block, mirrored by the app's "Power" screen.
@@ -621,6 +675,18 @@ bool applyPowerJson(JsonObjectConst o) {
   if (o.containsKey("wifiReportSec")) cfg.wifiReportSec = o["wifiReportSec"];
   if (o.containsKey("wifiWindowMs"))  cfg.wifiWindowMs  = o["wifiWindowMs"];
   if (o.containsKey("bleInWifi"))     cfg.bleInWifi     = o["bleInWifi"];
+
+  // The run mode belongs to this block, exactly as fillPowerJson() reports it.
+  // It is what lets the calibration region claim a board outright: the phone
+  // writes "mode":"ble" into flash while it is flashing the firmware, and the
+  // board comes up already provisioned instead of waiting in pairing mode for
+  // someone to ask it the question over a radio it has not been set up for.
+  if (o.containsKey("mode")) {
+    String m = o["mode"] | "";
+    if      (m == "ble")     cfg.mode = MODE_BLE;
+    else if (m == "wifi")    cfg.mode = MODE_WIFI;
+    else if (m == "pairing") cfg.mode = MODE_PAIRING;
+  }
   savePower();
   return true;
 }
@@ -862,7 +928,7 @@ class ProvCB : public BLECharacteristicCallbacks {
 // over the air (DEVICE_PROTOCOL.md §2.2).
 void beginProvisioning(const String& body) {
   sleepBlocked = true;             // hold the board up for the whole handshake
-  StaticJsonDocument<512> doc;
+  DynamicJsonDocument doc(CALIB_DOC_SIZE);
   if (deserializeJson(doc, body)) {
     sleepBlocked = false;
     pushStatus("prov", "bad json");
@@ -1075,7 +1141,9 @@ void serialStatus(const char* re) {
 }
 
 void handleSerialLine(const String& line) {
-  StaticJsonDocument<768> req;
+  // Wraps a whole calibration payload on the "calib" command, so it is sized
+  // for that rather than for the one-word commands.
+  DynamicJsonDocument req(CALIB_DOC_SIZE + 512);
   if (deserializeJson(req, line)) { serialReply("?", false, "bad json"); return; }
   String cmd = req["cmd"] | "";
   if (cmd.isEmpty()) return;          // somebody else's JSON, not a command
@@ -1107,13 +1175,26 @@ void handleSerialLine(const String& line) {
 
     if (!applyConfigJson(body)) { serialReply(cmd.c_str(), false, "bad config"); return; }
 
+    // The phone sends the whole calibration payload, behaviour included, so a
+    // board being recalibrated over the cable takes the new run mode and wake
+    // timer now rather than on its next boot.
+    DynamicJsonDocument whole(CALIB_DOC_SIZE);
+    bool parsed = !deserializeJson(whole, body);
+    if (parsed && whole.containsKey("power")) {
+      applyPowerJson(whole["power"].as<JsonObjectConst>());
+      runMode = provisioned() ? cfg.mode : MODE_PAIRING;
+      refreshAdvertisementData();
+    }
+
     if (cmd == "calib") {
-      StaticJsonDocument<768> doc;
-      deserializeJson(doc, body);
-      doc.remove("cmd");
-      doc["stamp"] = (uint32_t)(req["stamp"] | 0UL);
+      if (!parsed) { serialReply("calib", false, "bad config"); return; }
+      // The region gets everything the phone sent, behaviour included — so a
+      // board that has its NVS blanked by a later reflash claims itself again
+      // from the region rather than coming back up unprovisioned.
+      whole.remove("cmd");
+      whole["stamp"] = (uint32_t)(req["stamp"] | 0UL);
       String stored;
-      serializeJson(doc, stored);
+      serializeJson(whole, stored);
       if (!writeCalibRegion(stored)) {
         serialReply("calib", false, "no calib region");
         pushStatus("config");
@@ -1132,13 +1213,13 @@ void handleSerialLine(const String& line) {
     String payload;
     bool ok = readCalibRegion(payload);
     CalibRegion r = calibRegion();
-    StaticJsonDocument<1024> doc;
+    DynamicJsonDocument doc(CALIB_DOC_SIZE + 512);
     doc["re"]     = "getcalib";
     doc["ok"]     = ok;
     doc["region"] = r.offset;
     doc["size"]   = r.size;
     if (ok) {
-      StaticJsonDocument<768> stored;
+      DynamicJsonDocument stored(CALIB_DOC_SIZE);
       if (!deserializeJson(stored, payload)) doc["calib"] = stored;
     }
     serialSend(doc);

@@ -2,7 +2,7 @@
 
 This is the authoritative contract between the firmware in [`firmware/`](../firmware),
 the mobile apps (iOS + Flutter), and the backend in [`backend/`](../backend).
-Firmware `2.1.0` implements all of it.
+Firmware `2.2.0` implements all of it.
 
 One thing the radio contract cannot cover: a board that has never been set
 up. It has no pairing, no credentials and an empty NVS, so the very first
@@ -18,11 +18,23 @@ talks to it.** The board is asleep most of the time in both modes.
 
 | Mode | When | Radio | Sleep behaviour |
 |---|---|---|---|
-| `pairing` | factory-fresh, or the pairing button was pressed | BLE advertising, continuous | Stays awake for the 3-minute pairing window |
-| `ble` | the app provisioned `mode: "ble"` | BLE, windowed | Wake → sample → advertise `bleWindowMs` → **deep sleep `bleWakeSec`** |
-| `wifi` | the app provisioned `mode: "wifi"` with credentials | Wi-Fi STA (BLE off) | Wake → join Wi-Fi → POST telemetry → stay up `wifiWindowMs` → **deep sleep `wifiReportSec`** |
+| `pairing` | flashed with no mode, or the pairing button was pressed | BLE advertising, continuous | Stays awake for the 3-minute pairing window |
+| `ble` | `mode: "ble"` — from the flashed image (§6) or a §2.2 write | BLE, windowed | Wake → sample → advertise `bleWindowMs` → **deep sleep `bleWakeSec`** |
+| `wifi` | `mode: "wifi"` with credentials, same two sources | Wi-Fi STA (BLE off) | Wake → join Wi-Fi → POST telemetry → stay up `wifiWindowMs` → **deep sleep `wifiReportSec`** |
 
 Mode is persisted in NVS, so it survives deep sleep and power loss.
+
+There are two ways to set it and they land in the same field:
+
+- **In the image**, via the `power` block in the calibration region (§6). This
+  is the normal path — the phone knows what a board is for before the board
+  exists, so it writes the answer while it is writing the firmware and the board
+  applies it on its first boot. Flash, reset, done.
+- **Over a live link**, via §2.2 over BLE or `prov` over the serial console
+  (§7). This is for changing a board that is already running.
+
+A board is `pairing` only when nobody has answered the question yet. It is not a
+stage every board passes through.
 
 The board never sleeps while:
 
@@ -204,8 +216,8 @@ and session characteristics.
 
 ## 4. Power block
 
-Shared by `/api/power`, the provisioning payload's `power` field, and the cloud
-`setPower` command:
+Shared by `/api/power`, the provisioning payload's `power` field, the
+calibration region's `power` field (§6), and the cloud `setPower` command:
 
 ```json
 {
@@ -219,6 +231,12 @@ Shared by `/api/power`, the provisioning payload's `power` field, and the cloud
   "bleInWifi": false
 }
 ```
+
+`mode` is read as well as reported: `applyPowerJson()` persists it, which is
+what lets a flashed image claim a board outright (§6). Every other key is
+optional and an absent one is left alone. Firmware before `2.2.0` reported
+`mode` here but ignored it on the way in — a board that comes up in `pairing`
+after being flashed with a mode is running one of those.
 
 ## 5. Cloud API
 
@@ -298,9 +316,18 @@ and always returns `lastSeen`. The UI should say "last seen 6 min ago", not
 ## 6. Calibration region
 
 The phone flashes a board over USB before that board has any way to be talked
-to. The ADC pin, divider and calibration factor therefore cannot arrive over the
-air — they are written straight into a flash region **outside the program
-image**, in the same USB session that writes the firmware.
+to. Nothing about that board can therefore arrive over the air — not the ADC pin
+and divider, and not the run mode either. It is all written straight into a
+flash region **outside the program image**, in the same USB session that writes
+the firmware, and applied on the first boot that follows.
+
+**This is how a board gets set up.** The region carries the whole answer: the
+sensing chain, the board wiring, the power block (run mode + wake timers) and,
+for a Wi-Fi board, the credentials. A board therefore comes off the cable
+already claimed — it advertises as provisioned on its very first wake, and §2.2
+provisioning exists to *change* a running board, not to bring one up. Only a
+board flashed with `"mode": "pairing"` (or one whose pairing button was held)
+still needs the setup flow.
 
 | Chip | Where | How it is found |
 |---|---|---|
@@ -316,18 +343,38 @@ Layout, little-endian:
 | 6 | 2 | flags (reserved, `0`) |
 | 8 | 4 | payload length |
 | 12 | 4 | CRC-32 (IEEE) of the payload |
-| 16 | N | UTF-8 JSON: a `PinConfiguration` plus `"stamp"` |
+| 16 | N | UTF-8 JSON: a `PinConfiguration`, an optional `power` block, optional credentials, plus `"stamp"` |
 
 ```json
 { "boardId": "esp32-wroom", "batteryPinId": "gpio34", "adcResolutionBits": 12,
   "adcRefVoltage": 3.3, "dividerR1KOhm": 100, "dividerR2KOhm": 100,
   "calibrationFactor": 1.0, "sampleIntervalMs": 1000, "chemistry": "lipo",
   "cellCount": 1, "deviceName": "Garage pack", "statusLedPin": 2,
-  "statusLedActiveLow": false, "wakeButtonPin": 0, "stamp": 1755600000 }
+  "statusLedActiveLow": false, "wakeButtonPin": 0,
+  "power": { "mode": "ble", "sleepEnabled": true, "bleWakeSec": 300,
+             "bleWindowMs": 20000, "bleIdleMs": 60000,
+             "wifiReportSec": 900, "wifiWindowMs": 15000, "bleInWifi": false },
+  "stamp": 1755600000 }
 ```
 
-Beyond the sensing chain, three things about the board itself travel here,
-because all three were compiled-in guesses that are wrong on real hardware:
+The payload is at most ~620 bytes, which is why both sketches parse it with a
+1536-byte document on the heap: deserializing from a `String` copies every key
+and value, so the capacity has to clear the text with room for the tree on top.
+
+### Behaviour, not just wiring
+
+| Key | Meaning | Absent means |
+|---|---|---|
+| `power.mode` | `ble` · `wifi` · `pairing`. Persisted to NVS by `applyPowerJson()` exactly as a §2.2 provisioning write would, so the board is claimed before it first advertises | The board comes up in `pairing` mode and waits to be claimed |
+| `power.*` | The rest of the §4 block: `sleepEnabled`, `bleWakeSec`, `wifiReportSec`, the windows | Compiled-in defaults (5 min BLE / 15 min Wi-Fi) |
+| `ssid` / `password` | Credentials for `mode: "wifi"`, written to NVS on the same boot so the board joins immediately | No credentials; a board asked for `wifi` without them **refuses the mode** and stays unclaimed rather than booting into a network it cannot reach |
+| `backendUrl` / `deviceToken` | Cloud check-in, same fields as §2.2 | The board reports locally only |
+
+The credentials are written into flash alongside the firmware. That is the same
+trust boundary the firmware itself has: whoever holds the cable holds the board.
+
+Three things about the board's own wiring travel here too, because all three
+were compiled-in guesses that are wrong on real hardware:
 
 | Key | Meaning | Absent means |
 |---|---|---|
@@ -354,7 +401,12 @@ back to its compiled-in defaults rather than half-applying anything.
 
 Reflashing the app never touches the region. Blanking NVS (which the app does by
 default, so a reflashed board behaves like a new one) makes the board apply it
-again on the next boot.
+again on the next boot — including the run mode, which is what keeps a reflashed
+board claimed instead of dropping it back to `pairing`.
+
+The serial `calib` command writes the same full payload into the region and
+applies its `power` block immediately, so a board recalibrated over the cable
+takes the new mode and timer without waiting for a reset.
 
 ## 7. Serial console (USB)
 

@@ -30,7 +30,7 @@
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 
-static const char* FW_VERSION = "2.1.0";
+static const char* FW_VERSION = "2.2.0";
 static const char* HOSTNAME   = "batteryholder";
 
 // D0 (GPIO16) tied to RST? Deep sleep only works if it is.
@@ -227,8 +227,18 @@ void applyChemistry(const String& name) {
   else if (name == "lipo")  { cfg.cellMinV = 3.30f; cfg.cellMaxV = 4.20f; }
 }
 
+// How much ArduinoJson needs for one calibration payload.
+//
+// The region carries the sensing chain, the board wiring, the power block (run
+// mode and report interval) and, for a Wi-Fi board, credentials — around 620
+// bytes of JSON at its largest. Deserializing from a String copies every key
+// and value into the document, so the capacity has to clear the text with room
+// for the object tree on top. On the heap, not the stack: this part has 4 KB
+// of stack and would not survive two documents this size in one frame.
+static const size_t CALIB_DOC_SIZE = 1536;
+
 bool applyConfigJson(const String& body) {
-  StaticJsonDocument<640> doc;
+  DynamicJsonDocument doc(CALIB_DOC_SIZE);
   if (deserializeJson(doc, body)) return false;
   if (doc.containsKey("adcResolutionBits")) cfg.adcResBits    = doc["adcResolutionBits"];
   if (doc.containsKey("adcRefVoltage"))     cfg.adcRefVoltage = doc["adcRefVoltage"];
@@ -281,6 +291,15 @@ bool applyPowerJson(JsonObjectConst o) {
   if (o.containsKey("sleepEnabled"))  cfg.sleepEnabled = o["sleepEnabled"];
   if (o.containsKey("wifiReportSec")) cfg.reportSec    = o["wifiReportSec"];
   if (o.containsKey("wifiWindowMs"))  cfg.awakeWindowMs = o["wifiWindowMs"];
+
+  // The run mode travels in this block, which is what lets the calibration
+  // region claim a board outright — see applyCalibRegion(). This part has no
+  // BLE radio, so "ble" is not a mode it can offer; anything but "wifi" leaves
+  // the board unclaimed and advertising over its own soft AP.
+  if (o.containsKey("mode")) {
+    String m = o["mode"] | "";
+    cfg.mode = (m == "wifi") ? MODE_WIFI : MODE_PAIRING;
+  }
   saveConfig();
   return true;
 }
@@ -372,16 +391,38 @@ void applyCalibRegion() {
   String payload;
   if (!readCalibRegion(payload)) return;
 
-  StaticJsonDocument<640> doc;
+  DynamicJsonDocument doc(CALIB_DOC_SIZE);
   if (deserializeJson(doc, payload)) return;
   uint32_t stamp = doc["stamp"] | 0UL;
   if (stamp != 0 && stamp == cfg.calibStamp) return;   // already in EEPROM
 
   if (!applyConfigJson(payload)) return;
+
+  // Behaviour as well as wiring: the power block carries the run mode and the
+  // report interval, and the credentials ride alongside it, so a board flashed
+  // for Wi-Fi joins its network on this very first boot instead of coming up
+  // unclaimed and waiting to be provisioned.
   if (doc.containsKey("power")) applyPowerJson(doc["power"].as<JsonObjectConst>());
+  if (doc.containsKey("ssid"))
+    strlcpy(cfg.ssid, doc["ssid"] | "", sizeof(cfg.ssid));
+  if (doc.containsKey("password"))
+    strlcpy(cfg.pass, doc["password"] | "", sizeof(cfg.pass));
+  if (doc.containsKey("backendUrl"))
+    strlcpy(cfg.backendUrl, doc["backendUrl"] | "", sizeof(cfg.backendUrl));
+  if (doc.containsKey("deviceToken"))
+    strlcpy(cfg.token, doc["deviceToken"] | "", sizeof(cfg.token));
+
+  // Wi-Fi mode with no network named would boot, fail to join, and go quiet.
+  // Staying unclaimed at least leaves a board the app can still reach.
+  if (cfg.mode == MODE_WIFI && !hasWifiCreds()) {
+    Serial.println(F("[calib] wifi mode asked for without credentials — staying unclaimed"));
+    cfg.mode = MODE_PAIRING;
+  }
+
   cfg.calibStamp = stamp;
   saveConfig();
-  Serial.printf("[calib] applied stamp=%u\n", stamp);
+  Serial.printf("[calib] applied stamp=%u mode=%u report=%us\n",
+                stamp, cfg.mode, cfg.reportSec);
 }
 
 // Same shape as the ESP32's BLE status characteristic, so the app can reuse
@@ -568,7 +609,7 @@ void completeProvision() {
 
 // The SoftAP twin of the ESP32's BLE provisioning characteristic. Same JSON.
 void handleProvision() {
-  StaticJsonDocument<512> doc;
+  DynamicJsonDocument doc(CALIB_DOC_SIZE);
   if (deserializeJson(doc, server.arg("plain"))) {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}");
     return;
@@ -645,7 +686,9 @@ void serialReply(const char* re, bool ok, const char* detail = nullptr) {
 }
 
 void handleSerialLine(const String& line) {
-  StaticJsonDocument<640> req;
+  // Wraps a whole calibration payload on the "calib" command, so it is sized
+  // for that rather than for the one-word commands.
+  DynamicJsonDocument req(CALIB_DOC_SIZE + 512);
   if (deserializeJson(req, line)) { serialReply("?", false, "bad json"); return; }
   String cmd = req["cmd"] | "";
   if (cmd.isEmpty()) return;          // somebody else's JSON, not a command
@@ -680,14 +723,24 @@ void handleSerialLine(const String& line) {
 
     if (!applyConfigJson(body)) { serialReply(cmd.c_str(), false, "bad config"); return; }
 
+    // Behaviour as well as wiring, so a board recalibrated over the cable
+    // takes the new run mode and report interval now, not on its next boot.
+    DynamicJsonDocument whole(CALIB_DOC_SIZE);
+    bool parsed = !deserializeJson(whole, body);
+    if (parsed && whole.containsKey("power")) {
+      applyPowerJson(whole["power"].as<JsonObjectConst>());
+    }
+
     if (cmd == "calib") {
+      if (!parsed) { serialReply("calib", false, "bad config"); return; }
       uint32_t stamp = req["stamp"] | 0UL;
-      StaticJsonDocument<640> doc;
-      deserializeJson(doc, body);
-      doc.remove("cmd");
-      doc["stamp"] = stamp;
+      // The region gets everything the phone sent, behaviour included, so a
+      // board whose settings are blanked by a later reflash claims itself again
+      // from the region instead of coming up unprovisioned.
+      whole.remove("cmd");
+      whole["stamp"] = stamp;
       String stored;
-      serializeJson(doc, stored);
+      serializeJson(whole, stored);
       if (!writeCalibRegion(stored)) { serialReply("calib", false, "region write failed"); return; }
       cfg.calibStamp = stamp;
       saveConfig();
@@ -699,13 +752,13 @@ void handleSerialLine(const String& line) {
   if (cmd == "getcalib") {
     String payload;
     bool ok = readCalibRegion(payload);
-    StaticJsonDocument<896> doc;
+    DynamicJsonDocument doc(CALIB_DOC_SIZE + 512);
     doc["re"]     = "getcalib";
     doc["ok"]     = ok;
     doc["region"] = calibOffset();
     doc["size"]   = (uint32_t)SPI_FLASH_SEC_SIZE;
     if (ok) {
-      StaticJsonDocument<640> stored;
+      DynamicJsonDocument stored(CALIB_DOC_SIZE);
       if (!deserializeJson(stored, payload)) doc["calib"] = stored;
     }
     serialSend(doc);
