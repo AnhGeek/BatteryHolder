@@ -43,7 +43,11 @@ class _PowerViewState extends State<PowerView> {
   String? _note;
 
   /// Intervals offered as a picker, in seconds (handoff §7).
-  static const _intervals = [60, 300, 900, 3600];
+  ///
+  /// The same list the Configuration screen bakes into an image, for the
+  /// obvious reason: a board must never hold an interval its own settings
+  /// screen cannot show back.
+  static const _intervals = PowerConfig.intervalOptions;
 
   BLEManager get _ble => context.read<AppState>().ble;
 
@@ -246,14 +250,20 @@ class _PowerViewState extends State<PowerView> {
             subtitle: 'How often the board wakes in ${_mode.displayName} mode.',
           ),
           SizedBox(height: AppTheme.spacing.sm),
-          SegmentedPicker<int>(
-            options: _intervals,
-            selection: _intervals.contains(_interval) ? _interval : _intervals[1],
-            labelOf: _intervalLabel,
-            onChanged: _setInterval,
+          Wrap(
+            spacing: AppTheme.spacing.sm,
+            runSpacing: AppTheme.spacing.sm,
+            children: [
+              for (final seconds in _intervals)
+                _IntervalChip(
+                  label: PowerConfig.intervalLabel(seconds),
+                  isSelected: _interval == seconds,
+                  onTap: () => _setInterval(seconds),
+                ),
+            ],
           ),
           SizedBox(height: AppTheme.spacing.sm),
-          Callout(text: _batteryHint(_interval), tint: c.brand),
+          Callout(text: PowerConfig.batteryHint(_interval), tint: c.brand),
           SizedBox(height: AppTheme.spacing.xl),
 
           const SectionHeader(
@@ -417,17 +427,49 @@ class _PowerViewState extends State<PowerView> {
     );
   }
 
-  static String _intervalLabel(int seconds) =>
-      seconds >= 3600 ? '${seconds ~/ 3600} h' : '${seconds ~/ 60} min';
+}
 
-  /// Deliberately vague: real runtime depends on the pack, and quoting an exact
-  /// number the firmware cannot promise would be worse than a range.
-  static String _batteryHint(int seconds) => switch (seconds) {
-        <= 60 => 'Wakes every minute — expect days of runtime, not weeks.',
-        <= 300 => 'A good balance: weeks of runtime on a typical 18650.',
-        <= 900 => 'Long runtime — readings arrive up to 15 minutes apart.',
-        _ => 'Longest runtime. Readings arrive hourly, so short dips are missed.',
-      };
+/// One wake interval, offered as a tappable pill. Twelve options do not fit a
+/// segmented control, and they are the whole useful range.
+class _IntervalChip extends StatelessWidget {
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _IntervalChip({
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: Motion.quick,
+        constraints: const BoxConstraints(minWidth: 64),
+        padding: EdgeInsets.symmetric(
+            horizontal: AppTheme.spacing.md, vertical: AppTheme.spacing.sm),
+        decoration: BoxDecoration(
+          color: isSelected ? c.brand.withValues(alpha: 0.16) : c.surface,
+          borderRadius: BorderRadius.circular(AppTheme.radius.pill),
+          border: Border.all(color: isSelected ? c.brand : c.border),
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: AppTheme.font.subheadline.copyWith(
+            color: isSelected ? c.brand : c.textPrimary,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _NumberRow extends StatefulWidget {

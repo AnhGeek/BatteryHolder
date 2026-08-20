@@ -7,6 +7,7 @@ import '../../app/app_state.dart';
 import '../../design_system/components.dart';
 import '../../design_system/theme.dart';
 import '../../models/board.dart';
+import '../../models/device_status.dart';
 import '../../models/pin_configuration.dart';
 import '../../services/firmware_flasher.dart';
 
@@ -23,6 +24,17 @@ class PinConfigView extends StatefulWidget {
 class _PinConfigViewState extends State<PinConfigView> {
   _BuildStatus _generateStatus = _BuildStatus.idle;
   String? _generateError;
+
+  /// Wi-Fi credentials for a board being built in Wi-Fi mode. Held here rather
+  /// than in [AppState] because they are text being typed; the trimmed result
+  /// is what lands in the setup.
+  final _ssid = TextEditingController();
+  final _password = TextEditingController();
+
+  /// Whether the millisecond-level window settings are on screen. Folded away
+  /// by default: three people in a hundred want them, and the interval above
+  /// is the setting that actually decides how long the pack lasts.
+  bool _showPowerAdvanced = false;
 
   /// Which of [_buildStages] is on screen while the image is assembled.
   int _buildStage = 0;
@@ -42,6 +54,21 @@ class _PinConfigViewState extends State<PinConfigView> {
     ('Laying out the flash map…', Duration(milliseconds: 1400)),
     ('Verifying the image set…', Duration(milliseconds: 1100)),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    final setup = context.read<AppState>().boardSetup;
+    _ssid.text = setup.ssid;
+    _password.text = setup.password;
+  }
+
+  @override
+  void dispose() {
+    _ssid.dispose();
+    _password.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -85,6 +112,8 @@ class _PinConfigViewState extends State<PinConfigView> {
           _wiringSection(context, appState, config),
           SizedBox(height: AppTheme.spacing.xl),
           _rangeSummary(context, config),
+          SizedBox(height: AppTheme.spacing.xl),
+          _reportingSection(context, appState, board),
           SizedBox(height: AppTheme.spacing.xl),
           _generateSection(context, appState),
         ],
@@ -171,11 +200,15 @@ class _PinConfigViewState extends State<PinConfigView> {
         ),
         if (selectedPin != null) ...[
           SizedBox(height: AppTheme.spacing.sm),
+          // The board's run mode is what decides this, not the transport the
+          // app happens to be talking over: ADC2 is dead while the board's own
+          // Wi-Fi radio is up.
           if (!selectedPin.wifiSafeADC &&
-              appState.activeTransport == FlashTransport.wifi)
+              appState.boardSetup.mode == RunMode.wifi)
             Callout(
               text: '${selectedPin.name} uses ADC2, which is unavailable while '
-                  'Wi-Fi is active. Pick an ADC1 pin or use Bluetooth.',
+                  'Wi-Fi is active. Pick an ADC1 pin, or set this board to '
+                  'Bluetooth mode below.',
               tint: c.warning,
               icon: Icons.warning_amber_rounded,
             )
@@ -450,6 +483,232 @@ class _PinConfigViewState extends State<PinConfigView> {
     );
   }
 
+  // MARK: Reporting & timers
+
+  /// What the board does once it boots: how it reports, and how often.
+  ///
+  /// This is the half of setup that used to be asked over Bluetooth *after*
+  /// the flash, which left a freshly flashed board sitting unclaimed in pairing
+  /// mode until someone caught it awake and answered the same question again.
+  /// Answered here it travels in the calibration region, so the board wakes up
+  /// on its very first boot already in the mode it was built for
+  /// (DEVICE_PROTOCOL.md §6).
+  Widget _reportingSection(
+    BuildContext context,
+    AppState appState,
+    Board board,
+  ) {
+    final c = AppTheme.colorOf(context);
+    final setup = appState.boardSetup.forBoard(board);
+    final modes = _modesFor(board);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(
+          title: 'How it reports',
+          subtitle: 'Baked into the image, so the board is set up the moment '
+              'it boots.',
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        if (modes.length > 1)
+          SegmentedPicker<RunMode>(
+            options: modes,
+            selection: modes.contains(setup.mode) ? setup.mode : modes.first,
+            labelOf: _modeLabel,
+            onChanged: (mode) =>
+                appState.boardSetup = setup.copyWith(mode: mode),
+          ),
+        SizedBox(height: AppTheme.spacing.sm),
+        Callout(text: _modeHint(setup.mode), tint: c.brand, icon: Icons.info),
+
+        if (setup.mode == RunMode.wifi) ...[
+          SizedBox(height: AppTheme.spacing.md),
+          AppCard(
+            child: Column(
+              children: [
+                _TextRow(
+                  label: 'Network (SSID)',
+                  controller: _ssid,
+                  hint: 'Your 2.4 GHz network',
+                  onChanged: (value) =>
+                      appState.boardSetup = setup.copyWith(ssid: value),
+                ),
+                const Divider(),
+                _TextRow(
+                  label: 'Password',
+                  controller: _password,
+                  hint: 'Wi-Fi password',
+                  obscure: true,
+                  onChanged: (value) =>
+                      appState.boardSetup = setup.copyWith(password: value),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: AppTheme.spacing.xs),
+          Callout(
+            // The single most common provisioning failure, and after the fact
+            // it costs a reflash to discover.
+            text: 'ESP32 and ESP8266 boards only join 2.4 GHz networks. The '
+                'password is written into the board’s flash along with the '
+                'firmware.',
+            tint: c.warning,
+            icon: Icons.warning_amber_rounded,
+          ),
+        ],
+
+        SizedBox(height: AppTheme.spacing.xl),
+        SectionHeader(
+          title: 'Wake timer',
+          subtitle: setup.mode == RunMode.wifi
+              ? 'How often the board wakes, joins Wi-Fi and reports.'
+              : 'How often the board wakes, samples the pack and advertises.',
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        Wrap(
+          spacing: AppTheme.spacing.sm,
+          runSpacing: AppTheme.spacing.sm,
+          children: [
+            for (final seconds in PowerConfig.intervalOptions)
+              _IntervalChip(
+                label: PowerConfig.intervalLabel(seconds),
+                isSelected: setup.intervalSec == seconds,
+                onTap: () => appState.boardSetup = setup.withInterval(seconds),
+              ),
+          ],
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        Callout(
+            text: PowerConfig.batteryHint(setup.intervalSec), tint: c.brand),
+
+        SizedBox(height: AppTheme.spacing.md),
+        AppCard(
+          child: Row(
+            children: [
+              Expanded(
+                child: Text('Sleep between readings',
+                    style: AppTheme.font.body.copyWith(color: c.textPrimary)),
+              ),
+              Switch(
+                value: setup.power.sleepEnabled,
+                activeThumbColor: c.brand,
+                onChanged: (value) => appState.boardSetup = setup.copyWith(
+                    power: setup.power.copyWith(sleepEnabled: value)),
+              ),
+            ],
+          ),
+        ),
+        if (!setup.power.sleepEnabled) ...[
+          SizedBox(height: AppTheme.spacing.xs),
+          Callout(
+            text: 'A board that never sleeps is reachable all the time and '
+                'flattens the pack in hours rather than weeks. Right for a '
+                'board on a bench supply, wrong for one on a battery.',
+            tint: c.warning,
+            icon: Icons.warning_amber_rounded,
+          ),
+        ],
+
+        SizedBox(height: AppTheme.spacing.md),
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => setState(() => _showPowerAdvanced = !_showPowerAdvanced),
+          child: Row(
+            children: [
+              Expanded(
+                child: SectionHeader(
+                  title: 'Advanced timers',
+                  subtitle: _showPowerAdvanced
+                      ? 'Windows and timeouts, in milliseconds.'
+                      : 'Wake windows, idle timeout, BLE during Wi-Fi.',
+                ),
+              ),
+              Icon(_showPowerAdvanced ? Icons.expand_less : Icons.expand_more,
+                  color: c.textSecondary),
+            ],
+          ),
+        ),
+        if (_showPowerAdvanced) ...[
+          SizedBox(height: AppTheme.spacing.sm),
+          AppCard(
+            child: Column(
+              children: [
+                _NumberRow(
+                  label: 'BLE window (ms)',
+                  value: setup.power.bleWindowMs.toDouble(),
+                  isInteger: true,
+                  onChanged: (v) => appState.boardSetup = setup.copyWith(
+                      power: setup.power.copyWith(bleWindowMs: v.round())),
+                ),
+                const Divider(),
+                _NumberRow(
+                  label: 'BLE idle timeout (ms)',
+                  value: setup.power.bleIdleMs.toDouble(),
+                  isInteger: true,
+                  onChanged: (v) => appState.boardSetup = setup.copyWith(
+                      power: setup.power.copyWith(bleIdleMs: v.round())),
+                ),
+                const Divider(),
+                _NumberRow(
+                  label: 'Wi-Fi window (ms)',
+                  value: setup.power.wifiWindowMs.toDouble(),
+                  isInteger: true,
+                  onChanged: (v) => appState.boardSetup = setup.copyWith(
+                      power: setup.power.copyWith(wifiWindowMs: v.round())),
+                ),
+                const Divider(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text('Bluetooth while in Wi-Fi mode',
+                          style: AppTheme.font.body
+                              .copyWith(color: c.textPrimary)),
+                    ),
+                    Switch(
+                      value: setup.power.bleInWifi,
+                      activeThumbColor: c.brand,
+                      onChanged: (v) => appState.boardSetup = setup.copyWith(
+                          power: setup.power.copyWith(bleInWifi: v)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// The modes this board's radios can actually deliver. An ESP8266 has no BLE
+  /// at all, so offering "Bluetooth" on one would be offering a mode it could
+  /// never enter.
+  static List<RunMode> _modesFor(Board board) => [
+        if (board.supportedTransports.contains(FlashTransport.ble)) RunMode.ble,
+        if (board.supportedTransports.contains(FlashTransport.wifi))
+          RunMode.wifi,
+        RunMode.pairing,
+      ];
+
+  static String _modeLabel(RunMode mode) => switch (mode) {
+        RunMode.ble => 'Bluetooth',
+        RunMode.wifi => 'Wi-Fi',
+        RunMode.pairing => 'Decide later',
+      };
+
+  static String _modeHint(RunMode mode) => switch (mode) {
+        RunMode.ble => 'Readings when your phone is nearby. Longest battery '
+            'life, and nothing else to configure.',
+        RunMode.wifi =>
+          'The board joins this network on every wake and reports over it. '
+              'Needs the password below.',
+        RunMode.pairing =>
+          'The board comes up unclaimed and waits, advertising every minute, '
+              'until you set it up from the Devices tab. Pick this only if you '
+              'do not know yet how this board should report.',
+      };
+
   // MARK: Generate
 
   /// Builds the flashable image set for this board: the firmware `.bin` files
@@ -459,14 +718,18 @@ class _PinConfigViewState extends State<PinConfigView> {
     final c = AppTheme.colorOf(context);
     final busy = _generateStatus == _BuildStatus.building;
     final plan = appState.flashPlan;
+    final board = appState.selectedBoard;
+    final setup = board == null
+        ? appState.boardSetup
+        : appState.boardSetup.forBoard(board);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SectionHeader(
           title: 'Firmware image',
-          subtitle: 'Bundle the firmware and this calibration into a .bin set '
-              'you can flash over USB.',
+          subtitle: 'Bundle the firmware, this calibration and the settings '
+              'above into a .bin set you can flash over USB.',
         ),
         SizedBox(height: AppTheme.spacing.md),
         AppCard(
@@ -490,13 +753,23 @@ class _PinConfigViewState extends State<PinConfigView> {
         ),
         SizedBox(height: AppTheme.spacing.xs),
         Text(
-          "Clears the board's stored run mode and wake interval so it starts "
-          'from the firmware defaults instead of whatever was on it before.',
+          "Clears the board's stored run mode and wake interval so it takes "
+          'the settings above instead of whatever was on it before.',
           style: AppTheme.font.footnote.copyWith(color: c.textSecondary),
         ),
         SizedBox(height: AppTheme.spacing.md),
+        if (!setup.isComplete) ...[
+          Callout(
+            text: 'Name the Wi-Fi network this board should join, or set it '
+                'back to Bluetooth. A board flashed with no network would come '
+                'up, fail to join, and sit there advertising.',
+            tint: c.warning,
+            icon: Icons.warning_amber_rounded,
+          ),
+          SizedBox(height: AppTheme.spacing.md),
+        ],
         PrimaryButton(
-          onPressed: busy ? null : () => _generate(appState),
+          onPressed: busy || !setup.isComplete ? null : () => _generate(appState),
           child: busy
               ? SizedBox(
                   height: 20,
@@ -524,7 +797,8 @@ class _PinConfigViewState extends State<PinConfigView> {
           SizedBox(height: AppTheme.spacing.sm),
           Callout(
             text: 'Built ${plan.segments.length} images for '
-                '${plan.bundle.name} — opening the Flash screen.',
+                '${plan.bundle.name}, set to ${_modeLabel(plan.bootMode)} '
+                'mode — opening the Flash screen.',
             tint: c.success,
             icon: Icons.check_circle,
           ),
@@ -639,6 +913,102 @@ class _BuildProgress extends StatelessWidget {
 }
 
 // MARK: - Rows
+
+/// One wake interval, offered as a tappable pill.
+///
+/// A picker rather than a free number: the twelve options span half a minute
+/// to a day, which is the entire useful range, and every one of them is a
+/// value the board's own settings screen can show back later.
+class _IntervalChip extends StatelessWidget {
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _IntervalChip({
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: Motion.quick,
+        constraints: const BoxConstraints(minWidth: 64),
+        padding: EdgeInsets.symmetric(
+            horizontal: AppTheme.spacing.md, vertical: AppTheme.spacing.sm),
+        decoration: BoxDecoration(
+          color: isSelected ? c.brand.withValues(alpha: 0.16) : c.surface,
+          borderRadius: BorderRadius.circular(AppTheme.radius.pill),
+          border: Border.all(color: isSelected ? c.brand : c.border),
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: AppTheme.font.subheadline.copyWith(
+            color: isSelected ? c.brand : c.textPrimary,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Label on the left, right-aligned free text on the right.
+class _TextRow extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final String hint;
+  final bool obscure;
+  final ValueChanged<String> onChanged;
+
+  const _TextRow({
+    required this.label,
+    required this.controller,
+    required this.hint,
+    required this.onChanged,
+    this.obscure = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 132,
+          child: Text(label,
+              style: AppTheme.font.body.copyWith(color: c.textPrimary)),
+        ),
+        Expanded(
+          child: TextField(
+            controller: controller,
+            obscureText: obscure,
+            autocorrect: false,
+            enableSuggestions: false,
+            textAlign: TextAlign.right,
+            style: AppTheme.font.mono.copyWith(color: c.textPrimary),
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              hintText: hint,
+              hintStyle: AppTheme.font.mono.copyWith(color: c.textSecondary),
+              contentPadding: EdgeInsets.zero,
+            ),
+            onChanged: onChanged,
+          ),
+        ),
+      ],
+    );
+  }
+}
 
 /// Label on the left, right-aligned monospaced numeric field on the right.
 class _NumberRow extends StatefulWidget {
