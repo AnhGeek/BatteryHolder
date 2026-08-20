@@ -53,6 +53,15 @@ class Board {
   /// Preferred default battery pin id.
   final String? recommendedBatteryPinId;
 
+  /// How this board is usually wired, where that is known.
+  ///
+  /// Only ever a starting point: these are properties of the hardware in
+  /// someone's hand, not of the catalog, so they are editable and a null here
+  /// means "leave whatever the firmware was built with alone".
+  final int? statusLedPin;
+  final bool? statusLedActiveLow;
+  final int? wakeButtonPin;
+
   final List<FlashTransport> supportedTransports;
   final List<Pin> pins;
 
@@ -64,6 +73,9 @@ class Board {
     required this.adcResolutionBits,
     required this.adcRefVoltage,
     this.recommendedBatteryPinId,
+    this.statusLedPin,
+    this.statusLedActiveLow,
+    this.wakeButtonPin,
     required this.supportedTransports,
     required this.pins,
   });
@@ -95,6 +107,9 @@ class Board {
         adcResolutionBits: json['adcResolutionBits'] as int,
         adcRefVoltage: (json['adcRefVoltage'] as num).toDouble(),
         recommendedBatteryPinId: json['recommendedBatteryPinId'] as String?,
+        statusLedPin: (json['statusLedPin'] as num?)?.toInt(),
+        statusLedActiveLow: json['statusLedActiveLow'] as bool?,
+        wakeButtonPin: (json['wakeButtonPin'] as num?)?.toInt(),
         supportedTransports: ((json['supportedTransports'] as List?) ?? const [])
             .map((e) => FlashTransport.fromJson(e as String))
             .toList(),

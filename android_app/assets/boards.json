@@ -7,20 +7,166 @@
     "adcResolutionBits": 12,
     "adcRefVoltage": 3.3,
     "recommendedBatteryPinId": "gpio34",
-    "supportedTransports": ["ble", "wifi"],
+    "supportedTransports": [
+      "ble",
+      "wifi"
+    ],
     "pins": [
-      { "id": "gpio36", "name": "GPIO36 (VP)", "gpio": 36, "adcChannel": "ADC1_CH0", "adcUnit": 1, "inputOnly": true, "wifiSafeADC": true, "capabilities": ["adc"] },
-      { "id": "gpio39", "name": "GPIO39 (VN)", "gpio": 39, "adcChannel": "ADC1_CH3", "adcUnit": 1, "inputOnly": true, "wifiSafeADC": true, "capabilities": ["adc"] },
-      { "id": "gpio34", "name": "GPIO34", "gpio": 34, "adcChannel": "ADC1_CH6", "adcUnit": 1, "inputOnly": true, "wifiSafeADC": true, "capabilities": ["adc"], "note": "Input-only. Great default for a battery divider." },
-      { "id": "gpio35", "name": "GPIO35", "gpio": 35, "adcChannel": "ADC1_CH7", "adcUnit": 1, "inputOnly": true, "wifiSafeADC": true, "capabilities": ["adc"] },
-      { "id": "gpio32", "name": "GPIO32", "gpio": 32, "adcChannel": "ADC1_CH4", "adcUnit": 1, "inputOnly": false, "wifiSafeADC": true, "capabilities": ["adc", "digitalIn", "digitalOut", "touch"] },
-      { "id": "gpio33", "name": "GPIO33", "gpio": 33, "adcChannel": "ADC1_CH5", "adcUnit": 1, "inputOnly": false, "wifiSafeADC": true, "capabilities": ["adc", "digitalIn", "digitalOut", "touch"] },
-      { "id": "gpio25", "name": "GPIO25", "gpio": 25, "adcChannel": "ADC2_CH8", "adcUnit": 2, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["adc", "dac", "digitalIn", "digitalOut"], "note": "ADC2 is unavailable while Wi-Fi is active." },
-      { "id": "gpio26", "name": "GPIO26", "gpio": 26, "adcChannel": "ADC2_CH9", "adcUnit": 2, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["adc", "dac", "digitalIn", "digitalOut"], "note": "ADC2 is unavailable while Wi-Fi is active." },
-      { "id": "gpio27", "name": "GPIO27", "gpio": 27, "adcChannel": "ADC2_CH7", "adcUnit": 2, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["adc", "digitalIn", "digitalOut", "touch"], "note": "ADC2 is unavailable while Wi-Fi is active." },
-      { "id": "gpio21", "name": "GPIO21 (SDA)", "gpio": 21, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["digitalIn", "digitalOut", "i2c"] },
-      { "id": "gpio22", "name": "GPIO22 (SCL)", "gpio": 22, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["digitalIn", "digitalOut", "i2c"] }
-    ]
+      {
+        "id": "gpio36",
+        "name": "GPIO36 (VP)",
+        "gpio": 36,
+        "adcChannel": "ADC1_CH0",
+        "adcUnit": 1,
+        "inputOnly": true,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc"
+        ]
+      },
+      {
+        "id": "gpio39",
+        "name": "GPIO39 (VN)",
+        "gpio": 39,
+        "adcChannel": "ADC1_CH3",
+        "adcUnit": 1,
+        "inputOnly": true,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc"
+        ]
+      },
+      {
+        "id": "gpio34",
+        "name": "GPIO34",
+        "gpio": 34,
+        "adcChannel": "ADC1_CH6",
+        "adcUnit": 1,
+        "inputOnly": true,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc"
+        ],
+        "note": "Input-only. Great default for a battery divider."
+      },
+      {
+        "id": "gpio35",
+        "name": "GPIO35",
+        "gpio": 35,
+        "adcChannel": "ADC1_CH7",
+        "adcUnit": 1,
+        "inputOnly": true,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc"
+        ]
+      },
+      {
+        "id": "gpio32",
+        "name": "GPIO32",
+        "gpio": 32,
+        "adcChannel": "ADC1_CH4",
+        "adcUnit": 1,
+        "inputOnly": false,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut",
+          "touch"
+        ]
+      },
+      {
+        "id": "gpio33",
+        "name": "GPIO33",
+        "gpio": 33,
+        "adcChannel": "ADC1_CH5",
+        "adcUnit": 1,
+        "inputOnly": false,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut",
+          "touch"
+        ]
+      },
+      {
+        "id": "gpio25",
+        "name": "GPIO25",
+        "gpio": 25,
+        "adcChannel": "ADC2_CH8",
+        "adcUnit": 2,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "adc",
+          "dac",
+          "digitalIn",
+          "digitalOut"
+        ],
+        "note": "ADC2 is unavailable while Wi-Fi is active."
+      },
+      {
+        "id": "gpio26",
+        "name": "GPIO26",
+        "gpio": 26,
+        "adcChannel": "ADC2_CH9",
+        "adcUnit": 2,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "adc",
+          "dac",
+          "digitalIn",
+          "digitalOut"
+        ],
+        "note": "ADC2 is unavailable while Wi-Fi is active."
+      },
+      {
+        "id": "gpio27",
+        "name": "GPIO27",
+        "gpio": 27,
+        "adcChannel": "ADC2_CH7",
+        "adcUnit": 2,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut",
+          "touch"
+        ],
+        "note": "ADC2 is unavailable while Wi-Fi is active."
+      },
+      {
+        "id": "gpio21",
+        "name": "GPIO21 (SDA)",
+        "gpio": 21,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "digitalIn",
+          "digitalOut",
+          "i2c"
+        ]
+      },
+      {
+        "id": "gpio22",
+        "name": "GPIO22 (SCL)",
+        "gpio": 22,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "digitalIn",
+          "digitalOut",
+          "i2c"
+        ]
+      }
+    ],
+    "statusLedPin": 2,
+    "statusLedActiveLow": false,
+    "wakeButtonPin": 0
   },
   {
     "id": "esp32c3-devkit",
@@ -30,30 +176,154 @@
     "adcResolutionBits": 12,
     "adcRefVoltage": 3.3,
     "recommendedBatteryPinId": "gpio4",
-    "supportedTransports": ["ble", "wifi"],
+    "supportedTransports": [
+      "ble",
+      "wifi"
+    ],
     "pins": [
-      { "id": "gpio0", "name": "GPIO0", "gpio": 0, "adcChannel": "ADC1_CH0", "adcUnit": 1, "inputOnly": false, "wifiSafeADC": true, "capabilities": ["adc", "digitalIn", "digitalOut", "strapping"], "note": "Strapping pin — avoid pulling at boot." },
-      { "id": "gpio1", "name": "GPIO1", "gpio": 1, "adcChannel": "ADC1_CH1", "adcUnit": 1, "inputOnly": false, "wifiSafeADC": true, "capabilities": ["adc", "digitalIn", "digitalOut"] },
-      { "id": "gpio2", "name": "GPIO2", "gpio": 2, "adcChannel": "ADC1_CH2", "adcUnit": 1, "inputOnly": false, "wifiSafeADC": true, "capabilities": ["adc", "digitalIn", "digitalOut", "strapping"], "note": "Strapping pin." },
-      { "id": "gpio3", "name": "GPIO3", "gpio": 3, "adcChannel": "ADC1_CH3", "adcUnit": 1, "inputOnly": false, "wifiSafeADC": true, "capabilities": ["adc", "digitalIn", "digitalOut"] },
-      { "id": "gpio4", "name": "GPIO4", "gpio": 4, "adcChannel": "ADC1_CH4", "adcUnit": 1, "inputOnly": false, "wifiSafeADC": true, "capabilities": ["adc", "digitalIn", "digitalOut"], "note": "Good default for a battery divider." },
-      { "id": "gpio5", "name": "GPIO5", "gpio": 5, "adcChannel": "ADC2_CH0", "adcUnit": 2, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["adc", "digitalIn", "digitalOut"], "note": "ADC2 is unavailable while Wi-Fi is active." }
+      {
+        "id": "gpio0",
+        "name": "GPIO0",
+        "gpio": 0,
+        "adcChannel": "ADC1_CH0",
+        "adcUnit": 1,
+        "inputOnly": false,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut",
+          "strapping"
+        ],
+        "note": "Strapping pin \u2014 avoid pulling at boot."
+      },
+      {
+        "id": "gpio1",
+        "name": "GPIO1",
+        "gpio": 1,
+        "adcChannel": "ADC1_CH1",
+        "adcUnit": 1,
+        "inputOnly": false,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut"
+        ]
+      },
+      {
+        "id": "gpio2",
+        "name": "GPIO2",
+        "gpio": 2,
+        "adcChannel": "ADC1_CH2",
+        "adcUnit": 1,
+        "inputOnly": false,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut",
+          "strapping"
+        ],
+        "note": "Strapping pin."
+      },
+      {
+        "id": "gpio3",
+        "name": "GPIO3",
+        "gpio": 3,
+        "adcChannel": "ADC1_CH3",
+        "adcUnit": 1,
+        "inputOnly": false,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut"
+        ]
+      },
+      {
+        "id": "gpio4",
+        "name": "GPIO4",
+        "gpio": 4,
+        "adcChannel": "ADC1_CH4",
+        "adcUnit": 1,
+        "inputOnly": false,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut"
+        ],
+        "note": "Good default for a battery divider."
+      },
+      {
+        "id": "gpio5",
+        "name": "GPIO5",
+        "gpio": 5,
+        "adcChannel": "ADC2_CH0",
+        "adcUnit": 2,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "adc",
+          "digitalIn",
+          "digitalOut"
+        ],
+        "note": "ADC2 is unavailable while Wi-Fi is active."
+      }
     ]
   },
   {
     "id": "esp8266-nodemcu",
     "name": "NodeMCU (ESP8266)",
     "chip": "esp8266",
-    "summary": "ESP8266 has a single ADC (A0). NodeMCU adds an onboard divider so A0 reads 0-3.3V. No Bluetooth — flash over Wi-Fi.",
+    "summary": "ESP8266 has a single ADC (A0). NodeMCU adds an onboard divider so A0 reads 0-3.3V. No Bluetooth \u2014 flash over Wi-Fi.",
     "adcResolutionBits": 10,
     "adcRefVoltage": 3.3,
     "recommendedBatteryPinId": "a0",
-    "supportedTransports": ["wifi"],
+    "supportedTransports": [
+      "wifi"
+    ],
     "pins": [
-      { "id": "a0", "name": "A0 (ADC0)", "adcChannel": "ADC0", "inputOnly": true, "wifiSafeADC": true, "capabilities": ["adc"], "note": "Only analog pin. NodeMCU divider gives a 0-3.3V range." },
-      { "id": "gpio5", "name": "D1 (GPIO5)", "gpio": 5, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["digitalIn", "digitalOut", "i2c"] },
-      { "id": "gpio4", "name": "D2 (GPIO4)", "gpio": 4, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["digitalIn", "digitalOut", "i2c"] }
-    ]
+      {
+        "id": "a0",
+        "name": "A0 (ADC0)",
+        "adcChannel": "ADC0",
+        "inputOnly": true,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc"
+        ],
+        "note": "Only analog pin. NodeMCU divider gives a 0-3.3V range."
+      },
+      {
+        "id": "gpio5",
+        "name": "D1 (GPIO5)",
+        "gpio": 5,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "digitalIn",
+          "digitalOut",
+          "i2c"
+        ]
+      },
+      {
+        "id": "gpio4",
+        "name": "D2 (GPIO4)",
+        "gpio": 4,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "digitalIn",
+          "digitalOut",
+          "i2c"
+        ]
+      }
+    ],
+    "statusLedPin": 2,
+    "statusLedActiveLow": true,
+    "wakeButtonPin": 0
   },
   {
     "id": "esp8266-d1mini",
@@ -63,11 +333,48 @@
     "adcResolutionBits": 10,
     "adcRefVoltage": 3.2,
     "recommendedBatteryPinId": "a0",
-    "supportedTransports": ["wifi"],
+    "supportedTransports": [
+      "wifi"
+    ],
     "pins": [
-      { "id": "a0", "name": "A0 (ADC0)", "adcChannel": "ADC0", "inputOnly": true, "wifiSafeADC": true, "capabilities": ["adc"], "note": "Only analog pin. Onboard divider gives ~0-3.2V range." },
-      { "id": "gpio5", "name": "D1 (GPIO5)", "gpio": 5, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["digitalIn", "digitalOut", "i2c"] },
-      { "id": "gpio4", "name": "D2 (GPIO4)", "gpio": 4, "inputOnly": false, "wifiSafeADC": false, "capabilities": ["digitalIn", "digitalOut", "i2c"] }
-    ]
+      {
+        "id": "a0",
+        "name": "A0 (ADC0)",
+        "adcChannel": "ADC0",
+        "inputOnly": true,
+        "wifiSafeADC": true,
+        "capabilities": [
+          "adc"
+        ],
+        "note": "Only analog pin. Onboard divider gives ~0-3.2V range."
+      },
+      {
+        "id": "gpio5",
+        "name": "D1 (GPIO5)",
+        "gpio": 5,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "digitalIn",
+          "digitalOut",
+          "i2c"
+        ]
+      },
+      {
+        "id": "gpio4",
+        "name": "D2 (GPIO4)",
+        "gpio": 4,
+        "inputOnly": false,
+        "wifiSafeADC": false,
+        "capabilities": [
+          "digitalIn",
+          "digitalOut",
+          "i2c"
+        ]
+      }
+    ],
+    "statusLedPin": 2,
+    "statusLedActiveLow": true,
+    "wakeButtonPin": 0
   }
 ]

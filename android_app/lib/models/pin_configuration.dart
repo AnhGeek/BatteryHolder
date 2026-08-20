@@ -48,6 +48,28 @@ class PinConfiguration {
   final BatteryChemistry chemistry;
   final int cellCount;
 
+  /// What to call this board.
+  ///
+  /// Null or empty hands it back to the name the firmware makes up from the
+  /// last four hex digits of its MAC (`BH-1a2b`) — unique enough to tell two
+  /// boards on a bench apart without anyone naming them. A name set here is
+  /// what the board advertises, so it is what the Devices list shows.
+  final String? deviceName;
+
+  // Board wiring, as opposed to the sensing chain above.
+  //
+  // The firmware compiles in a guess for these — a dev board's usual LED and
+  // BOOT button — and a guess is exactly what goes wrong on real hardware: the
+  // LED is on another GPIO, it sinks instead of sources, the button is not
+  // wired at all. All three are therefore settable from here and travel in the
+  // calibration region, so correcting them never needs a rebuild.
+  //
+  // `null` means "leave whatever the board was built with"; `-1` means "this
+  // board has none".
+  final int? statusLedPin;
+  final bool? statusLedActiveLow;
+  final int? wakeButtonPin;
+
   const PinConfiguration({
     required this.boardId,
     required this.batteryPinId,
@@ -59,6 +81,10 @@ class PinConfiguration {
     required this.sampleIntervalMs,
     required this.chemistry,
     required this.cellCount,
+    this.deviceName,
+    this.statusLedPin,
+    this.statusLedActiveLow,
+    this.wakeButtonPin,
   });
 
   int get adcMaxCount => (1 << adcResolutionBits) - 1;
@@ -100,6 +126,9 @@ class PinConfiguration {
         sampleIntervalMs: 1000,
         chemistry: BatteryChemistry.lipo,
         cellCount: 1,
+        statusLedPin: board.statusLedPin,
+        statusLedActiveLow: board.statusLedActiveLow,
+        wakeButtonPin: board.wakeButtonPin,
       );
 
   PinConfiguration copyWith({
@@ -112,6 +141,12 @@ class PinConfiguration {
     int? sampleIntervalMs,
     BatteryChemistry? chemistry,
     int? cellCount,
+    // Wrapped so that passing an explicit null clears the override back to the
+    // board's own default, which `int?` alone cannot say.
+    ({String? value})? deviceName,
+    ({int? value})? statusLedPin,
+    ({bool? value})? statusLedActiveLow,
+    ({int? value})? wakeButtonPin,
   }) =>
       PinConfiguration(
         boardId: boardId,
@@ -124,6 +159,14 @@ class PinConfiguration {
         sampleIntervalMs: sampleIntervalMs ?? this.sampleIntervalMs,
         chemistry: chemistry ?? this.chemistry,
         cellCount: cellCount ?? this.cellCount,
+        deviceName: deviceName == null ? this.deviceName : deviceName.value,
+        statusLedPin:
+            statusLedPin == null ? this.statusLedPin : statusLedPin.value,
+        statusLedActiveLow: statusLedActiveLow == null
+            ? this.statusLedActiveLow
+            : statusLedActiveLow.value,
+        wakeButtonPin:
+            wakeButtonPin == null ? this.wakeButtonPin : wakeButtonPin.value,
       );
 
   /// Wire format shared with the firmware — keys match the Swift `Codable`
@@ -139,6 +182,12 @@ class PinConfiguration {
         'sampleIntervalMs': sampleIntervalMs,
         'chemistry': chemistry.name,
         'cellCount': cellCount,
+        // Omitted entirely when unset: an absent key tells the firmware to keep
+        // its own default, which is not the same as sending -1 ("no such pin").
+        if (deviceName != null) 'deviceName': deviceName,
+        if (statusLedPin != null) 'statusLedPin': statusLedPin,
+        if (statusLedActiveLow != null) 'statusLedActiveLow': statusLedActiveLow,
+        if (wakeButtonPin != null) 'wakeButtonPin': wakeButtonPin,
       };
 
   @override
@@ -153,7 +202,11 @@ class PinConfiguration {
       other.calibrationFactor == calibrationFactor &&
       other.sampleIntervalMs == sampleIntervalMs &&
       other.chemistry == chemistry &&
-      other.cellCount == cellCount;
+      other.cellCount == cellCount &&
+      other.deviceName == deviceName &&
+      other.statusLedPin == statusLedPin &&
+      other.statusLedActiveLow == statusLedActiveLow &&
+      other.wakeButtonPin == wakeButtonPin;
 
   @override
   int get hashCode => Object.hash(
@@ -167,5 +220,9 @@ class PinConfiguration {
         sampleIntervalMs,
         chemistry,
         cellCount,
+        deviceName,
+        statusLedPin,
+        statusLedActiveLow,
+        wakeButtonPin,
       );
 }

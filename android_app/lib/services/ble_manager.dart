@@ -46,6 +46,10 @@ class DiscoveredDevice {
   /// State of charge, 0–100.
   final int? soc;
 
+  /// When this board last advertised. Boards go quiet the moment they deep
+  /// sleep, so a stale stamp means "not reachable right now".
+  final DateTime lastSeen;
+
   DiscoveredDevice({
     required this.id,
     required this.name,
@@ -58,7 +62,24 @@ class DiscoveredDevice {
     this.wifiOnline = false,
     this.volts,
     this.soc,
-  });
+    DateTime? lastSeen,
+  }) : lastSeen = lastSeen ?? DateTime.now();
+
+  /// A board advertises continuously while awake, so anything seen in the last
+  /// few seconds can be connected to right now.
+  static const reachableWindow = Duration(seconds: 10);
+
+  /// How long an entry survives without a fresh advertisement before it is
+  /// dropped from the list entirely. The grace beyond [reachableWindow] lets a
+  /// row read "Asleep" for a moment first, instead of blinking out the instant
+  /// one packet is missed.
+  static const staleWindow = Duration(seconds: 20);
+
+  bool get isReachable =>
+      DateTime.now().difference(lastSeen) < reachableWindow;
+
+  /// The board has gone quiet for long enough that listing it would be a lie.
+  bool get isStale => DateTime.now().difference(lastSeen) > staleWindow;
 
   /// Board needs the setup wizard before it will report anything.
   bool get needsSetup => hasAdvData && !provisioned;
@@ -80,6 +101,7 @@ class DiscoveredDevice {
         wifiOnline: wifiOnline,
         volts: volts,
         soc: soc,
+        lastSeen: lastSeen,
       );
 
   /// Decodes the §2.1 manufacturer-data payload. Returns the device with flags
@@ -91,11 +113,15 @@ class DiscoveredDevice {
         : (r.device.platformName.isNotEmpty
             ? r.device.platformName
             : 'ESP device');
+    // Stamp from the advertisement itself, not from `now`: `scanResults` re-
+    // emits every device it has ever seen on each update, so using the clock
+    // here would keep a board that went quiet looking permanently awake.
     final base = DiscoveredDevice(
       id: r.device.remoteId.str,
       name: name,
       rssi: r.rssi,
       device: r.device,
+      lastSeen: r.timeStamp,
     );
 
     final bytes = r.advertisementData.manufacturerData[kAdvCompanyId];
@@ -115,6 +141,7 @@ class DiscoveredDevice {
       wifiOnline: (flags & 0x08) != 0,
       volts: (bytes[3] | (bytes[4] << 8)) / 1000.0,
       soc: bytes[5],
+      lastSeen: r.timeStamp,
     );
   }
 }
@@ -187,6 +214,10 @@ class BLEManager extends ChangeNotifier {
   ConnectionState get connection => _connection;
   DeviceSample? get latestSample => _latestSample;
 
+  /// BLE address of the board we are connected to, so a list can tell which of
+  /// several rows the current link belongs to.
+  String? get connectedDeviceId => _peripheral?.remoteId.str;
+
   /// Last status object the board pushed or we read (§2.3).
   DeviceStatus? get status => _status;
 
@@ -212,6 +243,9 @@ class BLEManager extends ChangeNotifier {
   BluetoothDevice? _peripheral;
   final Map<Guid, BluetoothCharacteristic> _chars = {};
   double? _lastDeviceVolts;
+
+  /// Drives [_onFreshnessTick] — see [_startFreshnessTicker].
+  Timer? _freshnessTicker;
 
   StreamSubscription<BluetoothAdapterState>? _adapterSub;
   StreamSubscription<List<ScanResult>>? _scanSub;
@@ -287,28 +321,52 @@ class BLEManager extends ChangeNotifier {
       notifyListeners();
     }
 
+    _startFreshnessTicker(force: true);
+
     await _scanSub?.cancel();
-    _scanSub = FlutterBluePlus.scanResults.listen((results) {
-      for (final r in results) {
-        final device = DiscoveredDevice.fromScan(r);
-        final existing = _discovered.indexWhere((d) => d.id == device.id);
-        // Replace wholesale: the advertisement's battery and flag bytes change
-        // between wakes, so keeping the first sighting would show stale data.
-        if (existing >= 0) {
-          _discovered[existing] = device;
-        } else {
-          _discovered.add(device);
+    _scanSub = FlutterBluePlus.scanResults.listen(
+      (results) {
+        for (final r in results) {
+          final device = DiscoveredDevice.fromScan(r);
+          final existing = _discovered.indexWhere((d) => d.id == device.id);
+          // Replace wholesale: the advertisement's battery and flag bytes
+          // change between wakes, so keeping the first sighting would show
+          // stale data.
+          if (existing >= 0) {
+            _discovered[existing] = device;
+          } else {
+            _discovered.add(device);
+          }
         }
-      }
-      notifyListeners();
-    });
+        _pruneStale();
+        notifyListeners();
+      },
+      // The plugin pushes scan failures onto this stream. A scan that the OS
+      // refused (throttled, adapter cycling, permission revoked mid-scan) is
+      // not something the user can act on, and an unhandled stream error would
+      // surface as a framework error. Swallow it; the empty-list callout
+      // already says everything worth saying.
+      onError: (Object e) {
+        assert(() {
+          debugPrint('BLE scan error (ignored): $e');
+          return true;
+        }());
+      },
+      cancelOnError: false,
+    );
 
     try {
       await FlutterBluePlus.startScan(
         withServices: [BLEUUID.service],
         timeout: scanTimeout,
+        // Process repeat advertisements so `lastSeen` and RSSI keep tracking
+        // reality; without this the plugin reports each board once and the list
+        // freezes at whatever the first sighting said.
+        continuousUpdates: true,
       );
     } catch (_) {
+      // Same reasoning as `onError` above: nothing here is actionable, so just
+      // fall out of "keep looking" instead of showing a failure.
       _keepLooking = false;
       notifyListeners();
     }
@@ -316,10 +374,73 @@ class BLEManager extends ChangeNotifier {
 
   Future<void> stopScan() async {
     _keepLooking = false;
-    await FlutterBluePlus.stopScan();
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (_) {
+      // Stopping a scan that is already stopped is not worth reporting.
+    }
     await _scanSub?.cancel();
     _scanSub = null;
     _isScanning = false;
+    // The ticker keeps running while rows remain: boards that were listed when
+    // the scan stopped still age out rather than lingering as phantoms.
+    _startFreshnessTicker();
+    notifyListeners();
+  }
+
+  /// Drops boards that have stopped advertising for longer than
+  /// [DiscoveredDevice.staleWindow].
+  ///
+  /// The connected board is exempt — a board stops advertising the moment it
+  /// accepts a connection, so ageing it out would delete the very row the user
+  /// is working with.
+  void _pruneStale() {
+    _discovered.removeWhere((d) => !keepsDevice(d, _pinnedDeviceId));
+  }
+
+  /// The one row a prune must never drop: the board a link is live on, or being
+  /// formed on.
+  ///
+  /// [connectedDeviceId] alone is not enough — it keeps answering after the
+  /// board hangs up on its own, and pinning on that would leave a phantom row
+  /// for a board that went to sleep minutes ago.
+  String? get _pinnedDeviceId => switch (_connection.status) {
+        ConnectionStatus.connecting ||
+        ConnectionStatus.discovering ||
+        ConnectionStatus.connected =>
+          connectedDeviceId,
+        _ => null,
+      };
+
+  /// The rule [_pruneStale] applies, split out so it can be tested without a
+  /// Bluetooth stack.
+  @visibleForTesting
+  static bool keepsDevice(DiscoveredDevice device, String? connectedId) =>
+      device.id == connectedId || !device.isStale;
+
+  /// Re-renders the list as entries age past
+  /// [DiscoveredDevice.reachableWindow] and removes them once past
+  /// [DiscoveredDevice.staleWindow]; nothing else would tell the UI that a
+  /// board went quiet.
+  ///
+  /// [force] starts it for a scan that has not produced results yet; otherwise
+  /// there is nothing to age and no timer is created.
+  void _startFreshnessTicker({bool force = false}) {
+    if (!force && _discovered.isEmpty && !_isScanning && !_keepLooking) return;
+    _freshnessTicker ??=
+        Timer.periodic(const Duration(seconds: 2), (_) => _onFreshnessTick());
+  }
+
+  void _onFreshnessTick() {
+    final before = _discovered.length;
+    _pruneStale();
+    // Nothing left to age and no scan running: stop burning a timer until the
+    // next scan starts.
+    if (_discovered.isEmpty && !_isScanning && !_keepLooking) {
+      _freshnessTicker?.cancel();
+      _freshnessTicker = null;
+      if (before == 0) return;
+    }
     notifyListeners();
   }
 
@@ -367,12 +488,14 @@ class BLEManager extends ChangeNotifier {
         _listen(ch);
       }
 
-      // A larger MTU makes the OTA data path meaningfully faster on Android.
+      // A larger MTU makes the OTA data path meaningfully faster — and it is
+      // what lets a whole status object arrive in one notification. Ask for
+      // the maximum: the status JSON has already outgrown 244 bytes once.
       if (defaultTargetPlatform == TargetPlatform.android) {
         try {
-          await device.device.requestMtu(247);
+          await device.device.requestMtu(512);
         } catch (_) {
-          // Not fatal: the transfer just uses smaller chunks.
+          // Not fatal: [readStatus] is the fallback that does not depend on it.
         }
       }
 
@@ -413,6 +536,25 @@ class BLEManager extends ChangeNotifier {
       _handleStatusPayload(await ch.read());
     } catch (_) {
       // A board that refuses notify on status still works for everything else.
+    }
+  }
+
+  /// Reads the status characteristic and republishes it as an event.
+  ///
+  /// Notifications are capped at MTU-3 bytes and are dropped silently when the
+  /// object does not fit, which is a miserable failure mode: the board answers,
+  /// the app hears nothing, and the user watches a spinner. A read is not
+  /// capped — long values come back over ATT_READ_BLOB — so polling this is how
+  /// a handshake stays reliable regardless of what MTU was negotiated, or of
+  /// what firmware the board is running.
+  Future<DeviceStatus?> readStatus() async {
+    final ch = _chars[BLEUUID.status];
+    if (ch == null) return null;
+    try {
+      _handleStatusPayload(await ch.read());
+      return _status;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -611,6 +753,69 @@ class BLEManager extends ChangeNotifier {
         power: power,
       );
 
+  /// Status events that end a provisioning write, one way or the other (§2.5).
+  static const _provisionDone = {'prov/ble mode', 'prov/done'};
+  static const _provisionFailed = {'prov/bad json', 'wifi/failed'};
+
+  /// Apply a power block and wait for the board to say it took it.
+  ///
+  /// [writePower] completes when the *write* lands, which is not the same as
+  /// the board having stored anything — the answer comes back afterwards on
+  /// the status characteristic (§2.5). A screen that tells the user "applied"
+  /// off the write alone is guessing, so anything that reports success to a
+  /// person waits here instead.
+  ///
+  /// Wi-Fi mode is the slow case: the firmware re-verifies the credentials
+  /// before it commits the mode, so the acknowledgement is a Wi-Fi join away.
+  Future<void> writePowerAcked(PowerConfig power) async {
+    // A v1 board has no status characteristic to answer on, so the write
+    // landing is the only confirmation that exists.
+    if (!supportsV2) return writePower(power);
+
+    final mode = _status?.mode ?? RunMode.ble;
+    // The board retains its last announcement, so a read that repeats it is
+    // not evidence that *this* write was taken.
+    final before = _status?.eventPath;
+
+    // Completed with the terminal event rather than an error: nothing awaits
+    // this until the write returns, and a Completer that fails in the meantime
+    // would surface as an unhandled async error.
+    final ack = Completer<String>();
+    final sub = statusEvents.listen((status) {
+      final path = status.eventPath;
+      if (ack.isCompleted) return;
+      if (_provisionDone.contains(path) || _provisionFailed.contains(path)) {
+        ack.complete(path);
+      }
+    });
+
+    try {
+      await writePower(power);
+      final path = await ack.future.timeout(mode == RunMode.wifi
+          ? const Duration(seconds: 35)
+          : const Duration(seconds: 12));
+      if (_provisionFailed.contains(path)) {
+        throw BLEException(_provisionFailure(path));
+      }
+    } on TimeoutException {
+      // Notifications carry MTU-3 bytes and are dropped silently when the
+      // status object does not fit; the value behind a read is not capped. So
+      // look once more before calling a quiet board a failure — but only
+      // believe an answer that differs from what it was already saying.
+      final path = (await readStatus())?.eventPath;
+      if (path != before && _provisionDone.contains(path)) return;
+      throw const BLEException(
+          'The board did not confirm the new settings. It may have gone back '
+          'to sleep — press RESET on it and try again.');
+    } finally {
+      await sub.cancel();
+    }
+  }
+
+  static String _provisionFailure(String path) => path == 'wifi/failed'
+      ? 'The board could not rejoin Wi-Fi, so it kept its previous settings.'
+      : 'The board rejected the settings.';
+
   // MARK: OTA
 
   /// Stream a firmware image to the board using the OTA control/data
@@ -706,12 +911,24 @@ class BLEManager extends ChangeNotifier {
         .getUint16(0, Endian.little);
   }
 
-  String _describe(Object e) => e is BLEException
-      ? e.message
-      : e.toString().replaceFirst('Exception: ', '');
+  /// Turns a failure into something a person can act on.
+  ///
+  /// Plugin exceptions carry stack-level detail ("FlutterBluePlusException |
+  /// connect | android-code: 133") that means nothing to the user, and by far
+  /// the most common cause is the board having closed its wake window — which
+  /// is normal. Keep the raw text in the debug log and hand the UI a sentence.
+  String _describe(Object e) {
+    if (e is BLEException) return e.message;
+    assert(() {
+      debugPrint('BLE failure: $e');
+      return true;
+    }());
+    return 'The board did not answer. Press RESET on the board and try again.';
+  }
 
   @override
   void dispose() {
+    _freshnessTicker?.cancel();
     _adapterSub?.cancel();
     _scanSub?.cancel();
     _scanningSub?.cancel();
