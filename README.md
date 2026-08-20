@@ -13,6 +13,7 @@ BatteryHolder connects to your board over **Bluetooth LE** or **Wi‑Fi**, reads
 - **Intuitive pin configuration** — tap the ADC pin you wired the battery to. The app only offers pins that can actually do ADC, and warns when a pin is unusable while Wi‑Fi is active (ESP32 ADC2 limitation).
 - **Voltage divider & calibration** — enter your R1/R2 resistor values and a calibration factor; the app converts raw ADC counts to real battery volts.
 - **Live monitoring** — real‑time voltage, percentage estimate, and history sparkline via BLE notifications or Wi‑Fi polling.
+- **USB flashing for new boards** — the Android app carries prebuilt firmware for every board in the catalog and flashes a bare ESP over the phone's OTG port, writing your calibration into a flash region the firmware reads on its first boot. No workstation, no Arduino IDE.
 - **OTA flashing** — flash a `.bin` firmware image to the board over **BLE** (chunked GATT writes) or **Wi‑Fi** (HTTP upload), with progress and verification.
 - **Cloud firmware catalog** — browse and download signed firmware builds hosted on AWS (S3 + API Gateway + Lambda).
 - **Bluetooth setup, Wi‑Fi afterwards** — pair a new board over BLE and hand it your Wi‑Fi password once; from then on it reports to the cloud on its own and you can reach it from anywhere.
@@ -36,6 +37,7 @@ BatteryHolder/
 │   ├── assets/                 # boards.json (copy of the iOS resource)
 │   └── tool/                   # Launcher icons, rendered from the iOS artwork
 ├── firmware/                   # Reference ESP32/ESP8266 Arduino sketch
+├── tools/build_firmware.py     # Builds the .bin images the Android app embeds
 ├── backend/                    # AWS SAM template for firmware distribution
 └── docs/                       # Architecture, design tokens, AWS backend
 ```
@@ -89,9 +91,17 @@ mapping. Note the port targets **protocol v1**, matching today's iOS app;
 ### Flash the reference firmware first
 
 The app talks to a small contract (a BLE GATT service, a Wi‑Fi HTTP API, and a
-cloud check-in). Flash [`firmware/battery_holder_node`](firmware/) to your board
-once over USB so the app has something to connect to; after that, all updates
-can go over the air.
+cloud check-in), so a board needs [`firmware/battery_holder_node`](firmware/) on
+it before there is anything to connect to. Two ways to get it there:
+
+- **From the Android app, over USB** — pick your board, set the pins, tap
+  **Generate BIN file** and then **Flash board over USB** with the board on an
+  OTG cable. The app ships the images and writes your calibration into flash at
+  the same time. Re-run [`tools/build_firmware.py`](tools/build_firmware.py)
+  whenever you change a sketch.
+- **From a workstation** — `arduino-cli compile` / `upload` as usual.
+
+After either route, all further updates can go over the air.
 
 A freshly flashed board comes up in **pairing mode** — no Wi‑Fi credentials are
 compiled in. The app finds it over Bluetooth, asks how it should report
