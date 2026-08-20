@@ -62,9 +62,12 @@ class _UsbFlashCardState extends State<UsbFlashCard> {
             // fixing.
             if (attached) ...[
               SizedBox(height: AppTheme.spacing.lg),
-              if (plan == null)
-                _noPlan(context, appState)
-              else ...[
+              if (plan == null) ...[
+                _noPlan(context, appState),
+                // "Check board" follows straight after "Open Setup"; without
+                // this the two tinted buttons touch and read as one block.
+                SizedBox(height: AppTheme.spacing.sm),
+              ] else ...[
                 _planCard(context, plan, appState),
                 SizedBox(height: AppTheme.spacing.md),
                 _provisionToggle(context, appState, usb),
