@@ -1,0 +1,159 @@
+{
+  "schema": 1,
+  "firmwareVersion": "2.1.0",
+  "builtAt": "2026-08-20T06:20:57+00:00",
+  "bundles": {
+    "esp32-wroom": {
+      "boardId": "esp32-wroom",
+      "sketch": "battery_holder_node",
+      "fqbn": "esp32:esp32:esp32:PartitionScheme=min_spiffs",
+      "parts": [
+        {
+          "file": "bootloader.bin",
+          "offset": 4096,
+          "size": 24992,
+          "md5": "42863d8b59e70f04bf1f3b0d5aae512e"
+        },
+        {
+          "file": "partitions.bin",
+          "offset": 32768,
+          "size": 3072,
+          "md5": "365f4124364af9a761394140a21bc28e"
+        },
+        {
+          "file": "boot_app0.bin",
+          "offset": 57344,
+          "size": 8192,
+          "md5": "e6327541e2dc394ca2c3b3280ac0f39f"
+        },
+        {
+          "file": "firmware.bin",
+          "offset": 65536,
+          "size": 1896592,
+          "md5": "19567e7bd057565ace4ac50e11256c89"
+        }
+      ],
+      "flashMode": "dio",
+      "flashFreq": "80m",
+      "flashSize": "4MB",
+      "calibration": {
+        "offset": 3997696,
+        "size": 4096
+      },
+      "eraseRegions": [
+        {
+          "offset": 36864,
+          "size": 20480,
+          "label": "nvs"
+        }
+      ],
+      "chip": "esp32",
+      "name": "ESP32 DevKitC (WROOM-32)"
+    },
+    "esp32c3-devkit": {
+      "boardId": "esp32c3-devkit",
+      "sketch": "battery_holder_node",
+      "fqbn": "esp32:esp32:esp32c3:PartitionScheme=min_spiffs,CDCOnBoot=cdc",
+      "parts": [
+        {
+          "file": "bootloader.bin",
+          "offset": 0,
+          "size": 19536,
+          "md5": "32c2fc63179ae32765425a048c93eb02"
+        },
+        {
+          "file": "partitions.bin",
+          "offset": 32768,
+          "size": 3072,
+          "md5": "365f4124364af9a761394140a21bc28e"
+        },
+        {
+          "file": "boot_app0.bin",
+          "offset": 57344,
+          "size": 8192,
+          "md5": "e6327541e2dc394ca2c3b3280ac0f39f"
+        },
+        {
+          "file": "firmware.bin",
+          "offset": 65536,
+          "size": 1522864,
+          "md5": "2f6551a16d6c9651f5d385b9952f93e7"
+        }
+      ],
+      "flashMode": "dio",
+      "flashFreq": "80m",
+      "flashSize": "4MB",
+      "calibration": {
+        "offset": 3997696,
+        "size": 4096
+      },
+      "eraseRegions": [
+        {
+          "offset": 36864,
+          "size": 20480,
+          "label": "nvs"
+        }
+      ],
+      "chip": "esp32c3",
+      "name": "ESP32-C3 DevKitM"
+    },
+    "esp8266-nodemcu": {
+      "boardId": "esp8266-nodemcu",
+      "sketch": "esp8266_node",
+      "fqbn": "esp8266:esp8266:nodemcuv2",
+      "parts": [
+        {
+          "file": "firmware.bin",
+          "offset": 0,
+          "size": 471968,
+          "md5": "4339b9f94a5b55d3dfb7809fbc8ff981"
+        }
+      ],
+      "flashMode": "dio",
+      "flashFreq": "40m",
+      "flashSize": "4MB",
+      "calibration": {
+        "offset": 4169728,
+        "size": 4096
+      },
+      "eraseRegions": [
+        {
+          "offset": 4173824,
+          "size": 4096,
+          "label": "eeprom"
+        }
+      ],
+      "chip": "esp8266",
+      "name": "NodeMCU (ESP8266)"
+    },
+    "esp8266-d1mini": {
+      "boardId": "esp8266-d1mini",
+      "sketch": "esp8266_node",
+      "fqbn": "esp8266:esp8266:d1_mini",
+      "parts": [
+        {
+          "file": "firmware.bin",
+          "offset": 0,
+          "size": 471968,
+          "md5": "4339b9f94a5b55d3dfb7809fbc8ff981"
+        }
+      ],
+      "flashMode": "dio",
+      "flashFreq": "40m",
+      "flashSize": "4MB",
+      "calibration": {
+        "offset": 4169728,
+        "size": 4096
+      },
+      "eraseRegions": [
+        {
+          "offset": 4173824,
+          "size": 4096,
+          "label": "eeprom"
+        }
+      ],
+      "chip": "esp8266",
+      "name": "Wemos D1 mini (ESP8266)"
+    }
+  }
+}
