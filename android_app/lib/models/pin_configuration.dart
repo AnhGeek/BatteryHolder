@@ -3,19 +3,33 @@ import 'pin.dart';
 
 /// Battery chemistry, used to estimate a percentage from measured voltage.
 enum BatteryChemistry {
-  lipo('LiPo', 3.3, 4.2),
-  liion('Li-ion', 3.0, 4.2),
-  nimh('NiMH', 1.0, 1.45),
-  lead('Lead-acid', 1.75, 2.10),
-  custom('Custom', 3.0, 4.2);
+  lipo('LiPo', 3.3, 4.2, 3.50),
+  liion('Li-ion', 3.0, 4.2, 3.30),
+  nimh('NiMH', 1.0, 1.45, 1.10),
+  lead('Lead-acid', 1.75, 2.10, 1.85),
+  custom('Custom', 3.0, 4.2, 3.30);
 
-  const BatteryChemistry(this.displayName, this.perCellMin, this.perCellMax);
+  const BatteryChemistry(
+    this.displayName,
+    this.perCellMin,
+    this.perCellMax,
+    this.lowPerCell,
+  );
 
   final String displayName;
 
   /// Empty / full voltage per cell.
   final double perCellMin;
   final double perCellMax;
+
+  /// Where "getting low" starts, per cell — roughly 20% of the way up from
+  /// empty to full.
+  ///
+  /// Deliberately above [perCellMin] rather than at it: [perCellMin] is the
+  /// voltage a pack is *done* at, and a warning that arrives there arrives too
+  /// late to act on. Lithium packs also fall off a cliff below it, so a lithium
+  /// board warned at empty is a board already being damaged.
+  final double lowPerCell;
 
   String get id => name;
 
@@ -110,6 +124,20 @@ class PinConfiguration {
     return pct.clamp(0.0, 1.0);
   }
 
+  /// Cells, floored at one — a pack cannot have none, and dividing by zero is
+  /// how a threshold becomes infinity.
+  int get effectiveCellCount => cellCount < 1 ? 1 : cellCount;
+
+  /// Where the low-battery warning starts for this pack, unless a board has
+  /// been given a threshold of its own.
+  ///
+  /// A property of the pack, so it moves with the pack: switching a 1S LiPo to
+  /// a 6-cell lead-acid must not leave a 3.5 V line behind that a 12 V pack
+  /// would never reach. Whether any board actually warns, and at what, is
+  /// `DeviceAlertSetting` — this is only the number a new one starts from.
+  double get defaultLowBatteryVolts =>
+      chemistry.lowPerCell * effectiveCellCount;
+
   /// A sensible default configuration for a board + chosen pin.
   factory PinConfiguration.makeDefault({
     required Board board,
@@ -182,6 +210,11 @@ class PinConfiguration {
         'sampleIntervalMs': sampleIntervalMs,
         'chemistry': chemistry.name,
         'cellCount': cellCount,
+        // The low-battery warning is deliberately absent. It is a thing the
+        // phone does about the pack, not a thing the board does: the firmware
+        // has no notion of a notification, and every key here costs bytes in
+        // the calibration region the board actually has to hold.
+        //
         // Omitted entirely when unset: an absent key tells the firmware to keep
         // its own default, which is not the same as sending -1 ("no such pin").
         if (deviceName != null) 'deviceName': deviceName,

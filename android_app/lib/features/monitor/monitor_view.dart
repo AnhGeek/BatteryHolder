@@ -338,7 +338,7 @@ class _DeviceRow extends StatelessWidget {
                   name: device.name,
                   entryCount: device.entryCount,
                   onConfirmed: () =>
-                      appState.beaconLog.clearDevice(device.deviceId),
+                      appState.forgetDevice(device.deviceId),
                 ),
               ),
             ),

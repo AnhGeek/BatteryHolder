@@ -286,7 +286,8 @@ class _PinConfigViewState extends State<PinConfigView> {
       children: [
         const SectionHeader(
           title: 'Battery pack',
-          subtitle: 'Used for the percentage estimate.',
+          subtitle: 'Used for the percentage estimate, and for where a new '
+              'board starts warning that it is low.',
         ),
         SizedBox(height: AppTheme.spacing.sm),
         AppCard(
@@ -350,6 +351,14 @@ class _PinConfigViewState extends State<PinConfigView> {
               ),
             ],
           ),
+        ),
+        SizedBox(height: AppTheme.spacing.xs),
+        Text(
+          'A board first seen with this pack starts warning below '
+          '${config.defaultLowBatteryVolts.toStringAsFixed(2)} V. Each board '
+          'keeps its own switch and its own threshold, on its page under '
+          'Monitor.',
+          style: AppTheme.font.footnote.copyWith(color: c.textSecondary),
         ),
       ],
     );

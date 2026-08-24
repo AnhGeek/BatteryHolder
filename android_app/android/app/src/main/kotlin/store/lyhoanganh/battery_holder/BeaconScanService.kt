@@ -98,6 +98,9 @@ class BeaconScanService : Service() {
     /** Rows appended since the last trim, so we don't stat the file every hit. */
     private var appendsSinceTrim = 0
 
+    /** Consecutive logged wakes below the alert threshold, per board. */
+    private val lowRuns = HashMap<String, Int>()
+
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result ?: return
@@ -226,6 +229,8 @@ class BeaconScanService : Service() {
         )
         if (!worthLogging) return
 
+        if (millivolts != null) checkLowBattery(deviceId, name, millivolts / 1000.0)
+
         append(
             buildString {
                 append("{\"t\":").append(now)
@@ -239,6 +244,51 @@ class BeaconScanService : Service() {
                 append(",\"f\":").append(flags)
                 append('}')
             }
+        )
+    }
+
+    // --------------------------------------------------------------- alert --
+
+    /**
+     * Apply the low-battery rule to one *wake*.
+     *
+     * Counted per logged row rather than per sighting, and that is the whole
+     * design: a board rebuilds its advertisement every 10 s while it is awake,
+     * so counting sightings would reach five inside a single 20-second wake and
+     * warn about a pack that had one bad minute. One row is one wake, so five
+     * rows is five wakes — minutes to hours apart — which is a pack that really
+     * is going flat.
+     *
+     * The run is held in memory: if Android kills the service the count starts
+     * again, which costs at most a few extra wakes before a warning that was
+     * going to fire anyway. The repeat window is *not* held here — that lives
+     * in prefs, so a service restart cannot turn one flat pack into a stream
+     * of notifications.
+     */
+    private fun checkLowBattery(deviceId: String, name: String, volts: Double) {
+        val setting = LowBatteryAlerts.settingFor(this, deviceId) ?: return
+
+        if (volts >= setting.thresholdVolts) {
+            lowRuns.remove(deviceId)
+            return
+        }
+
+        val samples = LowBatteryAlerts.samplesBeforeAlert(this)
+        // Clamped: once a board is over the line the only question left is
+        // whether its repeat window has passed, which `postIfDue` answers.
+        val run = minOf((lowRuns[deviceId] ?: 0) + 1, samples)
+        lowRuns[deviceId] = run
+        if (run < samples) return
+
+        val label = if (name.isEmpty()) deviceId else name
+        LowBatteryAlerts.postIfDue(
+            this,
+            deviceId = deviceId,
+            title = "Battery low",
+            body = "%s is at %.2f V — %d readings in a row below %.2f V.".format(
+                label, volts, samples, setting.thresholdVolts
+            ),
+            repeatMinutes = setting.repeatMinutes,
         )
     }
 
