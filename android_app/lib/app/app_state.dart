@@ -20,6 +20,7 @@ import '../services/ble_manager.dart';
 import '../services/firmware_bundle_repository.dart';
 import '../services/firmware_flasher.dart';
 import '../services/firmware_repository.dart';
+import '../services/low_battery_alerts.dart';
 import '../services/usb_flash_service.dart';
 import '../services/wifi_ota_service.dart';
 
@@ -55,6 +56,10 @@ class AppState extends ChangeNotifier {
 
   set pinConfiguration(PinConfiguration? value) {
     _pinConfiguration = value;
+    // Chemistry and cell count decide where a newly seen board starts warning,
+    // so any edit here moves that default — never a board that has been given
+    // a threshold of its own.
+    if (value != null) alerts.setDefaultThreshold(value.defaultLowBatteryVolts);
     notifyListeners();
   }
 
@@ -122,6 +127,10 @@ class AppState extends ChangeNotifier {
   /// Flashes a bare board over the USB cable.
   final UsbFlashService usbFlasher = UsbFlashService();
 
+  /// Per-board low-battery warnings, fed by live readings here and by
+  /// background sightings inside the native scan service.
+  final LowBatteryAlerts alerts;
+
   final List<StreamSubscription<DeviceSample>> _sampleSubs = [];
   static const _maxReadings = 120;
 
@@ -130,9 +139,11 @@ class AppState extends ChangeNotifier {
     WiFiOTAService? wifi,
     FirmwareRepository? firmwareRepo,
     FirmwareBundleRepository? firmwareBundles,
+    LowBatteryAlerts? alerts,
   })  : ble = ble ?? BLEManager(),
         wifi = wifi ?? WiFiOTAService(),
         firmwareBundles = firmwareBundles ?? FirmwareBundleRepository(),
+        alerts = alerts ?? LowBatteryAlerts(),
         firmwareRepo = firmwareRepo ??
             FirmwareRepository(baseURL: AppConfig.firmwareApiBaseURL) {
     flasher = FirmwareFlasher(ble: this.ble, wifi: this.wifi);
@@ -155,6 +166,7 @@ class AppState extends ChangeNotifier {
 
     // Bring back whatever the background service logged while we were closed,
     // then make sure it is running again.
+    await alerts.load();
     await beaconLog.reload();
     await beaconScan.refresh();
     if (beaconScan.isEnabled) await beaconScan.start();
@@ -212,6 +224,9 @@ class AppState extends ChangeNotifier {
     // An ESP8266 has no BLE radio, so "Bluetooth mode" is not a preference to
     // keep holding on one — it is a mode the board could never enter.
     _boardSetup = _boardSetup.forBoard(board);
+    // The pack chosen for this board is where a newly seen board starts.
+    final cfg = _pinConfiguration;
+    if (cfg != null) alerts.setDefaultThreshold(cfg.defaultLowBatteryVolts);
     notifyListeners();
   }
 
@@ -220,6 +235,17 @@ class AppState extends ChangeNotifier {
     if (cfg == null) return;
     _pinConfiguration = cfg.copyWith(batteryPinId: pin.id);
     notifyListeners();
+  }
+
+  /// Delete everything the app holds about one board.
+  ///
+  /// A board only exists here because its log does — the Monitor list is rolled
+  /// up from those rows — so dropping the log drops the board, and its alert
+  /// setting has to go with it. Otherwise a board that came back later would
+  /// silently inherit a threshold from a life nobody remembers.
+  Future<void> forgetDevice(String deviceId) async {
+    alerts.forgetDevice(deviceId);
+    await beaconLog.clearDevice(deviceId);
   }
 
   /// Push the current configuration to the connected board over the active
@@ -275,6 +301,9 @@ class AppState extends ChangeNotifier {
 
   void stopMonitoring() {
     _isMonitoring = false;
+    // A run of low readings only means something while the readings keep
+    // coming; the next session starts its count from scratch.
+    alerts.reset();
     ble.setNotifying(false);
     // Hand the board back to its sleep cycle; leaving it awake would burn the
     // pack until the idle timeout fires.
@@ -408,7 +437,34 @@ class AppState extends ChangeNotifier {
     if (_readings.length > _maxReadings) {
       _readings.removeRange(0, _readings.length - _maxReadings);
     }
+    _checkLowBattery(volts, cfg);
     notifyListeners();
+  }
+
+  /// Feed a live reading to the warning.
+  ///
+  /// Unawaited on purpose: posting a notification is a platform round trip and
+  /// samples arrive on a timer, so waiting on it here would stall the chart.
+  void _checkLowBattery(double volts, PinConfiguration cfg) {
+    final deviceId = ble.connectedDeviceId ?? wifi.connected?.id ?? cfg.boardId;
+    unawaited(alerts
+        .ingest(
+          deviceId: deviceId,
+          deviceName: _liveDeviceName(deviceId, cfg),
+          volts: volts,
+        )
+        .catchError((_) => false));
+  }
+
+  /// What to call the board being monitored, in a notification the user reads
+  /// with the app closed — so a name, never a bare BLE address if we have one.
+  String _liveDeviceName(String deviceId, PinConfiguration cfg) {
+    final chosen = cfg.deviceName?.trim();
+    if (chosen != null && chosen.isNotEmpty) return chosen;
+    for (final device in ble.discovered) {
+      if (device.id == deviceId && device.name.isNotEmpty) return device.name;
+    }
+    return wifi.connected?.name ?? 'This board';
   }
 
   static Future<List<Board>> _loadBoards() async {
@@ -428,6 +484,7 @@ class AppState extends ChangeNotifier {
     for (final s in _sampleSubs) {
       s.cancel();
     }
+    alerts.dispose();
     beaconLog.dispose();
     beaconScan.dispose();
     usbFlasher.dispose();

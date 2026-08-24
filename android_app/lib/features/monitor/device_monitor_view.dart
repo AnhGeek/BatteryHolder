@@ -1,12 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/app_state.dart';
 import '../../design_system/components.dart';
 import '../../design_system/theme.dart';
 import '../../models/beacon_log.dart';
+import '../../models/device_alert_setting.dart';
+import '../../services/low_battery_alerts.dart';
 import '../board_awake_mixin.dart';
 import 'monitor_view.dart' show confirmDeleteLog, relativeTime;
 
@@ -82,7 +85,8 @@ class _DeviceMonitorViewState extends State<DeviceMonitorView>
         ],
       ),
       body: ListenableBuilder(
-        listenable: Listenable.merge([appState.beaconLog, appState.ble]),
+        listenable: Listenable.merge(
+            [appState.beaconLog, appState.ble, appState.alerts]),
         builder: (context, _) {
           final entries = appState.beaconLog.entriesFor(widget.deviceId);
           return _body(context, appState, entries);
@@ -234,6 +238,9 @@ class _DeviceMonitorViewState extends State<DeviceMonitorView>
             ),
           SizedBox(height: AppTheme.spacing.xl),
 
+          _AlertSection(deviceId: widget.deviceId, latestVolts: volts),
+          SizedBox(height: AppTheme.spacing.xl),
+
           _LogSection(entries: entries),
           if (entries.isNotEmpty) ...[
             SizedBox(height: AppTheme.spacing.md),
@@ -256,7 +263,7 @@ class _DeviceMonitorViewState extends State<DeviceMonitorView>
         name: widget.name,
         entryCount: count,
         onConfirmed: () =>
-            context.read<AppState>().beaconLog.clearDevice(widget.deviceId),
+            context.read<AppState>().forgetDevice(widget.deviceId),
       );
 
   List<double> _historyValues(
@@ -272,6 +279,212 @@ class _DeviceMonitorViewState extends State<DeviceMonitorView>
       for (final e in entries.reversed)
         if (e.volts != null) e.volts!,
     ];
+  }
+}
+
+/// Whether this board warns when its pack runs low, and below what.
+///
+/// Lives here, on the board's own page, rather than with the calibration: the
+/// question is about one board in one place — the shed, the boat, the bench —
+/// and two boards flashed from the same image routinely deserve different
+/// answers. The log underneath is the other reason it belongs on this screen:
+/// the readings that will trip it are right there to look at.
+class _AlertSection extends StatelessWidget {
+  final String deviceId;
+
+  /// The board's most recent voltage, if it has ever reported one.
+  final double? latestVolts;
+
+  const _AlertSection({
+    required this.deviceId,
+    required this.latestVolts,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+    final alerts = context.read<AppState>().alerts;
+    final setting = alerts.settingFor(deviceId);
+    final low = latestVolts;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(
+          title: 'Low battery alert',
+          subtitle: 'A notification when this board is running out.',
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        AppCard(
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Notify me',
+                        style:
+                            AppTheme.font.body.copyWith(color: c.textPrimary)),
+                  ),
+                  Switch(
+                    value: setting.enabled,
+                    activeThumbColor: c.brand,
+                    onChanged: (v) => alerts.setEnabled(deviceId, v),
+                  ),
+                ],
+              ),
+              if (setting.enabled) ...[
+                const Divider(),
+                _ThresholdRow(
+                  volts: setting.thresholdVolts,
+                  onChanged: (v) => alerts.setThreshold(deviceId, v),
+                ),
+                const Divider(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text('Remind me at most every',
+                          style: AppTheme.font.body
+                              .copyWith(color: c.textPrimary)),
+                    ),
+                    DropdownButtonHideUnderline(
+                      child: DropdownButton<Duration>(
+                        value: setting.repeatAfter,
+                        isDense: true,
+                        borderRadius: BorderRadius.circular(AppTheme.radius.md),
+                        style: AppTheme.font.body.copyWith(color: c.brand),
+                        items: [
+                          for (final choice
+                              in DeviceAlertSetting.repeatChoices)
+                            DropdownMenuItem(
+                              value: choice,
+                              child:
+                                  Text(DeviceAlertSetting.describe(choice)),
+                            ),
+                        ],
+                        onChanged: (choice) {
+                          if (choice == null) return;
+                          alerts.setRepeatAfter(deviceId, choice);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (setting.enabled) ...[
+          SizedBox(height: AppTheme.spacing.xs),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  'Warns once ${LowBatteryAlerts.samplesBeforeAlert} readings '
+                  'in a row come in below this — one dip under load is not a '
+                  'flat pack — then again every '
+                  '${DeviceAlertSetting.describe(setting.repeatAfter)} while '
+                  'it stays low. Keeps working while the app is closed, as '
+                  'long as background logging is on.',
+                  style:
+                      AppTheme.font.footnote.copyWith(color: c.textSecondary),
+                ),
+              ),
+              // Only worth offering once this board has an answer of its own.
+              if (alerts.hasOwnSetting(deviceId))
+                TextButton(
+                  onPressed: () => alerts.useDefault(deviceId),
+                  child: const Text('Use default'),
+                ),
+            ],
+          ),
+          if (low != null && low < setting.thresholdVolts)
+            Padding(
+              padding: EdgeInsets.only(top: AppTheme.spacing.sm),
+              child: Callout(
+                text: 'The last reading, ${low.toStringAsFixed(2)} V, is '
+                    'already below this.',
+                tint: c.warning,
+                icon: Icons.warning_amber,
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+/// The threshold, as a voltage typed straight into the row.
+class _ThresholdRow extends StatefulWidget {
+  final double volts;
+  final ValueChanged<double> onChanged;
+
+  const _ThresholdRow({required this.volts, required this.onChanged});
+
+  @override
+  State<_ThresholdRow> createState() => _ThresholdRowState();
+}
+
+class _ThresholdRowState extends State<_ThresholdRow> {
+  late final TextEditingController _controller =
+      TextEditingController(text: _format(widget.volts));
+
+  /// No trailing ".0" on a whole number of volts.
+  static String _format(double v) =>
+      v == v.roundToDouble() ? v.round().toString() : v.toString();
+
+  @override
+  void didUpdateWidget(_ThresholdRow old) {
+    super.didUpdateWidget(old);
+    // Reflect a change made elsewhere — "use default" — without fighting the
+    // cursor of someone mid-edit.
+    if (widget.volts != old.volts &&
+        double.tryParse(_controller.text) != widget.volts) {
+      _controller.text = _format(widget.volts);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+
+    return Row(
+      children: [
+        Expanded(
+          child: Text('Warn below (V)',
+              style: AppTheme.font.body.copyWith(color: c.textPrimary)),
+        ),
+        SizedBox(
+          width: 120,
+          child: TextField(
+            controller: _controller,
+            textAlign: TextAlign.right,
+            style: AppTheme.font.mono.copyWith(color: c.textPrimary),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+            ],
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              hintText: 'Volts',
+              hintStyle: AppTheme.font.mono.copyWith(color: c.textSecondary),
+              contentPadding: EdgeInsets.zero,
+            ),
+            onChanged: (text) {
+              final parsed = double.tryParse(text);
+              if (parsed != null) widget.onChanged(parsed);
+            },
+          ),
+        ),
+      ],
+    );
   }
 }
 

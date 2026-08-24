@@ -30,3 +30,10 @@ samconfig.toml
 *.pem
 *.p12
 .env
+
+## App signing — the keystore and its passwords live outside the repo, in
+## Documents/BatteryHolder-keys. Losing them means never being able to update
+## the published app; committing them means anyone can publish as us.
+*.jks
+*.keystore
+key.properties

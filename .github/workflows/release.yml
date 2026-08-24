@@ -1,0 +1,269 @@
+name: Release
+
+# Tag a commit and the release builds itself:
+#
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag is the version. It has to match a section in CHANGELOG.md, because the
+# release notes are that section — a release nobody can read the changes of is
+# only half published.
+#
+# Run it from the Actions tab instead ("Run workflow") to rehearse the whole
+# thing: it builds and signs exactly the same way, uploads the results as
+# workflow artifacts, and publishes nothing.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (e.g. 0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.44.1"
+  JAVA_VERSION: "17"
+  APP_DIR: android_app
+
+concurrency:
+  # One release at a time, and never cancel one half-published.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags and history, so the notes can link a real comparison range.
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            PUBLISH=false
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+            PUBLISH=true
+          fi
+
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$VERSION' is not a semantic version"
+            exit 1
+          fi
+
+          # versionCode has to rise with every upload Play ever sees, and it is
+          # the one number that can never be corrected afterwards. Deriving it
+          # from the version keeps it monotonic without depending on a run
+          # counter that resets when a workflow is renamed.
+          BASE="${VERSION%%-*}"
+          IFS=. read -r MAJOR MINOR PATCH <<< "$BASE"
+          CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+
+          {
+            echo "version=$VERSION"
+            echo "code=$CODE"
+            echo "publish=$PUBLISH"
+            echo "tag=v$VERSION"
+            echo "apk=BatteryHolder-$VERSION.apk"
+            echo "aab=BatteryHolder-$VERSION.aab"
+            # A pre-release tag (0.1.0-beta.1) must not become "Latest".
+            case "$VERSION" in *-*) echo "prerelease=true" ;; *) echo "prerelease=false" ;; esac
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Building $VERSION (versionCode $CODE), publish=$PUBLISH"
+
+      - name: Take the release notes from the changelog
+        id: notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Everything under "## [x.y.z]", up to the next heading or the link
+          # references at the foot of the file. Matched by exact prefix rather
+          # than by a regex built from the version: the brackets around it are
+          # a character class to any regex engine, which quietly matches
+          # nothing and would publish a release with empty notes.
+          BODY="$(awk -v hdr="## [$VERSION]" '
+            index($0, hdr) == 1 { grab = 1; next }
+            grab && /^## / { exit }
+            grab && /^\[[^][]*\]: / { exit }
+            grab { print }
+          ' CHANGELOG.md)"
+
+          if [ -z "$(printf '%s' "$BODY" | tr -d '[:space:]')" ]; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section. Add one before tagging."
+            exit 1
+          fi
+
+          # Trim the blank lines the section is padded with.
+          printf '%s\n' "$BODY" | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac > changelog-section.md
+          echo "Release notes:"
+          cat changelog-section.md
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Fetch packages
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter analyze
+
+      - name: Test
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter test
+
+      - name: Restore the upload key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::error::KEYSTORE_BASE64 is not set. See docs/RELEASING.md."
+            exit 1
+          fi
+
+          # Outside the checkout: nothing that could be committed, and nothing
+          # left behind in an artifact.
+          KEYSTORE="$RUNNER_TEMP/upload.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE"
+
+          # The same file the local build reads, so both sign identically.
+          cat > "$APP_DIR/android/key.properties" <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=$KEYSTORE
+          EOF
+
+      - name: Build the APK
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          flutter build apk --release \
+            --build-name=${{ steps.version.outputs.version }} \
+            --build-number=${{ steps.version.outputs.code }}
+
+      - name: Build the app bundle
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          flutter build appbundle --release \
+            --build-name=${{ steps.version.outputs.version }} \
+            --build-number=${{ steps.version.outputs.code }}
+
+      - name: Check what was signed
+        id: signing
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)"
+          "$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk \
+            | tee signing.txt
+          # A release signed with the debug key would install and then be
+          # impossible to update from Play. Catch it here, not in the console.
+          if grep -qi "CN=Android Debug" signing.txt; then
+            echo "::error::The APK was signed with the debug key, not the upload key."
+            exit 1
+          fi
+
+      - name: Collect the artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "$APP_DIR/build/app/outputs/flutter-apk/app-release.apk" "dist/${{ steps.version.outputs.apk }}"
+          cp "$APP_DIR/build/app/outputs/bundle/release/app-release.aab" "dist/${{ steps.version.outputs.aab }}"
+
+          cd dist
+          sha256sum "${{ steps.version.outputs.apk }}" "${{ steps.version.outputs.aab }}" > SHA256SUMS.txt
+          APK_SHA="$(sha256sum "${{ steps.version.outputs.apk }}" | cut -d' ' -f1)"
+          APK_SIZE="$(du -h "${{ steps.version.outputs.apk }}" | cut -f1)"
+          {
+            echo "apk_sha=$APK_SHA"
+            echo "apk_size=$APK_SIZE"
+          } >> "$GITHUB_OUTPUT"
+          ls -la
+
+      - name: Write the release notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          BASE="${{ github.server_url }}/${{ github.repository }}"
+          PREVIOUS="$(git tag --list 'v*.*.*' --sort=-v:refname | grep -v "^$TAG$" | head -1 || true)"
+
+          {
+            echo "## Download"
+            echo
+            echo "**[${{ steps.version.outputs.apk }}]($BASE/releases/download/$TAG/${{ steps.version.outputs.apk }})** — ${{ steps.artifacts.outputs.apk_size }}, install straight onto an Android phone."
+            echo
+            echo "\`${{ steps.version.outputs.aab }}\` below is the Play Store upload; it is not installable by hand."
+            echo
+            echo "<details><summary>SHA-256</summary>"
+            echo
+            echo "\`\`\`"
+            echo "${{ steps.artifacts.outputs.apk_sha }}  ${{ steps.version.outputs.apk }}"
+            echo "\`\`\`"
+            echo
+            echo "</details>"
+            echo
+            echo "## Changes"
+            echo
+            cat changelog-section.md
+            echo
+            if [ -n "$PREVIOUS" ]; then
+              echo "**Full diff:** [\`$PREVIOUS...$TAG\`]($BASE/compare/$PREVIOUS...$TAG) · [changelog]($BASE/blob/$TAG/CHANGELOG.md)"
+            else
+              echo "**Changelog:** [CHANGELOG.md]($BASE/blob/$TAG/CHANGELOG.md)"
+            fi
+          } > release-notes.md
+
+          cat release-notes.md
+
+      - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "BatteryHolder ${{ steps.version.outputs.version }}" \
+            --notes-file release-notes.md \
+            ${{ steps.version.outputs.prerelease == 'true' && '--prerelease' || '' }} \
+            dist/*
+
+      # A rehearsal keeps its build where the tab that started it can reach it.
+      - name: Upload the build for inspection
+        if: steps.version.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryHolder-${{ steps.version.outputs.version }}
+          path: |
+            dist/
+            release-notes.md
+          retention-days: 14

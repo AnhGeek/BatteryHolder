@@ -2,7 +2,9 @@ name: battery_holder
 description: "ESP32 / ESP8266 battery monitoring and OTA flashing — Android port of the iOS app."
 publish_to: 'none'
 
-version: 1.0.0+1
+# The release workflow overrides both halves from the git tag it builds; this is
+# what a local build gets. Keep it in step with the newest CHANGELOG entry.
+version: 0.1.0+100
 
 environment:
   sdk: ^3.12.1

@@ -11,6 +11,9 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val CHANNEL = "store.lyhoanganh.battery_holder/beacon_scan"
+
+        /** Low-battery warnings; see `low_battery_alerts.dart`. */
+        private const val ALERTS_CHANNEL = "store.lyhoanganh.battery_holder/alerts"
     }
 
     /** USB-host serial, used to flash and calibrate a board over the cable. */
@@ -68,6 +71,47 @@ class MainActivity : FlutterActivity() {
 
                     // Whether a scan is actually in flight right now.
                     "isScanning" -> result.success(BeaconScanService.isRunning)
+
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ALERTS_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // Mirror the per-board settings so the background scan
+                    // judges a sighting the way the foreground judges a sample.
+                    "setLowBatteryAlerts" -> {
+                        LowBatteryAlerts.saveSettings(
+                            this,
+                            settings = call.argument<String>("settings") ?: "{}",
+                            samples = call.argument<Int>("samples") ?: 5,
+                        )
+                        result.success(true)
+                    }
+
+                    // Dart applied the five-sample rule to a live reading; the
+                    // repeat window is checked here, because this side is the
+                    // only one that remembers it across a restart.
+                    "postLowBatteryAlert" -> result.success(
+                        LowBatteryAlerts.postIfDue(
+                            this,
+                            deviceId = call.argument<String>("deviceId") ?: "board",
+                            title = call.argument<String>("title") ?: "Battery low",
+                            body = call.argument<String>("body") ?: "",
+                            repeatMinutes = call.argument<Int>("repeatMinutes") ?: 120,
+                        )
+                    )
+
+                    // A board whose settings just changed must not sit out the
+                    // rest of a window it earned under the old ones.
+                    "clearLowBatteryWindow" -> {
+                        LowBatteryAlerts.clearWindow(
+                            this,
+                            call.argument<String>("deviceId") ?: "",
+                        )
+                        result.success(true)
+                    }
 
                     else -> result.notImplemented()
                 }
