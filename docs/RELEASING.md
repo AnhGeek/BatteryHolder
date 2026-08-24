@@ -76,7 +76,7 @@ app is a dead disk, not an expired certificate.
 
 ## CI secrets
 
-The workflow rebuilds the same `key.properties` from four repository secrets
+The workflow rebuilds the same `key.properties` from three repository secrets
 (Settings → Secrets and variables → Actions):
 
 | Secret | Value |
@@ -84,7 +84,11 @@ The workflow rebuilds the same `key.properties` from four repository secrets
 | `KEYSTORE_BASE64` | `batteryholder-upload.jks`, base64-encoded |
 | `KEYSTORE_PASSWORD` | `storePassword` from `key.properties` |
 | `KEY_PASSWORD` | `keyPassword` from `key.properties` |
-| `KEY_ALIAS` | `upload` |
+
+The alias is `KEY_ALIAS` in the workflow's own `env`, not a secret. Actions
+masks every secret value wherever it appears in a log, so an alias of `upload`
+would black out that word in every ordinary sentence that used it — including
+the release notes echoed into the build log.
 
 To set them again from the key folder:
 
@@ -93,7 +97,6 @@ KEYDIR="/c/Users/HoangAnh/Documents/BatteryHolder-keys"
 base64 -w0 "$KEYDIR/batteryholder-upload.jks" | gh secret set KEYSTORE_BASE64
 grep '^storePassword=' "$KEYDIR/key.properties" | cut -d= -f2- | tr -d '\r\n' | gh secret set KEYSTORE_PASSWORD
 grep '^keyPassword=' "$KEYDIR/key.properties" | cut -d= -f2- | tr -d '\r\n' | gh secret set KEY_PASSWORD
-printf 'upload' | gh secret set KEY_ALIAS
 ```
 
 The build fails loudly if `KEYSTORE_BASE64` is missing, and again if the APK
