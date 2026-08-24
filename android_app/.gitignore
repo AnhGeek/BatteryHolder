@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# App signing. Kept in Documents/BatteryHolder-keys, never here.
+*.jks
+*.keystore
+key.properties
+android/key.properties
