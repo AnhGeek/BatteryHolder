@@ -30,6 +30,10 @@ env:
   FLUTTER_VERSION: "3.44.1"
   JAVA_VERSION: "17"
   APP_DIR: android_app
+  # Not a secret, and actively harmful as one: Actions masks every secret value
+  # wherever it appears in a log, so an alias of "upload" turns every ordinary
+  # sentence containing that word into ***.
+  KEY_ALIAS: upload
 
 concurrency:
   # One release at a time, and never cancel one half-published.
@@ -42,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Tags and history, so the notes can link a real comparison range.
           fetch-depth: 0
@@ -113,7 +117,7 @@ jobs:
           echo "Release notes:"
           cat changelog-section.md
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
@@ -141,7 +145,6 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           set -euo pipefail
           if [ -z "${KEYSTORE_BASE64:-}" ]; then
@@ -260,7 +263,7 @@ jobs:
       # A rehearsal keeps its build where the tab that started it can reach it.
       - name: Upload the build for inspection
         if: steps.version.outputs.publish != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: BatteryHolder-${{ steps.version.outputs.version }}
           path: |
