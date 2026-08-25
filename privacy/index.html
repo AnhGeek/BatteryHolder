@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — BatteryHolder</title>
+<meta name="description" content="Privacy policy for the BatteryHolder Android app. BatteryHolder has no accounts, no analytics and no servers: everything it records stays on your phone.">
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f6f7f9;
+    --border: #e2e5ea;
+    --text: #16181d;
+    --muted: #5c636e;
+    --accent: #1f6feb;
+    --accent-soft: #eaf1fd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --surface: #171a21;
+      --border: #272c36;
+      --text: #e8eaee;
+      --muted: #9aa2ae;
+      --accent: #6aa6ff;
+      --accent-soft: #16233a;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+  }
+
+  .wrap {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 3rem 1.25rem 5rem;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2.5rem;
+  }
+
+  h1 {
+    font-size: 1.9rem;
+    line-height: 1.2;
+    margin: 0 0 .5rem;
+    letter-spacing: -.02em;
+  }
+
+  .sub { color: var(--muted); margin: 0; font-size: .95rem; }
+
+  h2 {
+    font-size: 1.2rem;
+    margin: 2.75rem 0 .75rem;
+    letter-spacing: -.01em;
+  }
+
+  h3 {
+    font-size: 1rem;
+    margin: 1.75rem 0 .5rem;
+  }
+
+  p, li { color: var(--text); }
+
+  a { color: var(--accent); }
+
+  .lede {
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-radius: .6rem;
+    padding: 1.1rem 1.25rem;
+    margin: 0 0 1rem;
+  }
+
+  .lede p { margin: 0; }
+  .lede p + p { margin-top: .6rem; }
+
+  ul { padding-left: 1.25rem; }
+  li { margin: .35rem 0; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .875em;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: .3rem;
+    padding: .1em .35em;
+  }
+
+  .table-scroll { overflow-x: auto; margin: 1rem 0; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 34rem;
+    font-size: .93rem;
+  }
+
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: .65rem .75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  th {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: .82rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+
+  td code { white-space: nowrap; }
+
+  footer {
+    margin-top: 3.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: .9rem;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>BatteryHolder — Privacy Policy</h1>
+  <p class="sub">Last updated 25 August 2026</p>
+</header>
+
+<div class="lede">
+  <p><strong>BatteryHolder does not collect your data.</strong> There are no
+  accounts, no analytics, no advertising and no servers operated by us. The app
+  talks to the battery-monitoring boards you own, over Bluetooth, USB or your own
+  Wi-Fi network, and everything it records is written to private storage on your
+  phone.</p>
+  <p>Nothing the app records is transmitted to us or to any third party.</p>
+</div>
+
+<p>This policy explains what BatteryHolder (“the app”) stores, why it asks for
+each permission, and what control you have. It applies to the BatteryHolder
+Android app, package <code>com.batteryholder</code>.</p>
+
+<h2>What the app stores on your device</h2>
+
+<p>All of the following is kept in the app’s private storage area, which other
+apps cannot read, and all of it is removed when you uninstall the app.</p>
+
+<h3>Board reading log</h3>
+
+<p>Your boards broadcast a short Bluetooth advertisement each time they wake.
+When you switch on background logging, the app records one row per broadcast so
+you can see history from times you were not looking at your phone. Each row
+contains:</p>
+
+<ul>
+  <li>the time the broadcast was received;</li>
+  <li>the board’s Bluetooth address and the short name it advertises
+      (for example <code>BH-d08c</code>);</li>
+  <li>the signal strength of the broadcast;</li>
+  <li>the battery voltage and state of charge the board reported;</li>
+  <li>status flags describing the board’s mode.</li>
+</ul>
+
+<p>This is information about your hardware, not about you. The log is capped at
+roughly 4,000 rows, after which the oldest are discarded.</p>
+
+<h3>Settings</h3>
+
+<p>Your low-battery alert preferences (whether alerts are on, the voltage
+threshold and how often you may be reminded) and the calibration and wiring
+settings you enter for a board.</p>
+
+<h3>Wi-Fi network credentials</h3>
+
+<p>If you set a board up to report over Wi-Fi, the app asks for your network name
+and password so that the board can join that network. These are handled
+differently from everything else, and deliberately so:</p>
+
+<ul>
+  <li>they are held only in memory while you are setting the board up;</li>
+  <li>they are written into the board’s own storage, either over the USB cable or
+      over an encrypted Bluetooth connection to that board;</li>
+  <li>they are <strong>not</strong> saved to your phone’s disk by the app, and they
+      are <strong>never</strong> transmitted off your local network.</li>
+</ul>
+
+<h2>What the app does not do</h2>
+
+<ul>
+  <li>It does not ask you to create an account or sign in.</li>
+  <li>It contains no analytics, crash-reporting, advertising or tracking software.</li>
+  <li>It does not collect your name, email address, phone number, contacts,
+      photos, or the identifiers advertisers use.</li>
+  <li>It does not determine or record your location. See the note on the location
+      permission below.</li>
+  <li>It does not sell or share information with anyone, because it does not
+      transmit any to begin with.</li>
+</ul>
+
+<h2>Network activity</h2>
+
+<p>The app uses the network in exactly two ways, both confined to the local
+network you are connected to:</p>
+
+<ul>
+  <li><strong>Finding boards.</strong> It browses for boards advertising the
+      <code>_batteryholder._tcp</code> service on your Wi-Fi network.</li>
+  <li><strong>Updating firmware.</strong> It uploads a firmware image directly to
+      a board’s own address on your network.</li>
+</ul>
+
+<p>The firmware images the app installs are bundled inside the app itself. It does
+not download them, and it does not contact any server we operate.</p>
+
+<h2>Permissions, and why each is needed</h2>
+
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr><th>Permission</th><th>Why the app asks for it</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>BLUETOOTH_SCAN</code><br><code>BLUETOOTH_CONNECT</code></td>
+      <td>To discover your boards when they wake and to connect to them for live
+          readings, configuration and wireless firmware updates.</td>
+    </tr>
+    <tr>
+      <td><code>ACCESS_FINE_LOCATION</code></td>
+      <td>Requested only on Android 11 and older, where the operating system
+          required location access before any app could scan for Bluetooth
+          devices at all. The app does not use it to determine where you are. On
+          Android 12 and newer it is not requested: the Bluetooth scan is
+          declared with the <code>neverForLocation</code> flag, which tells the
+          system the app must not be given location information.</td>
+    </tr>
+    <tr>
+      <td><code>FOREGROUND_SERVICE</code><br><code>FOREGROUND_SERVICE_CONNECTED_DEVICE</code></td>
+      <td>Boards are awake for only about twenty seconds at a time, every few
+          minutes. Recording those wakes requires a service that keeps running
+          when the app is closed. Android shows a permanent notification while it
+          is active, and you can switch it off at any time.</td>
+    </tr>
+    <tr>
+      <td><code>POST_NOTIFICATIONS</code></td>
+      <td>To show the low-battery warnings you enable, and the notification
+          Android requires while background logging is running.</td>
+    </tr>
+    <tr>
+      <td><code>RECEIVE_BOOT_COMPLETED</code></td>
+      <td>To resume background logging after you restart your phone, if you had it
+          switched on.</td>
+    </tr>
+    <tr>
+      <td><code>INTERNET</code><br><code>ACCESS_NETWORK_STATE</code><br><code>ACCESS_WIFI_STATE</code><br><code>CHANGE_WIFI_MULTICAST_STATE</code></td>
+      <td>To find boards on your local network and send firmware to them.
+          Multicast is what local network discovery uses.</td>
+    </tr>
+    <tr>
+      <td>USB host access</td>
+      <td>To install firmware onto a board plugged into your phone’s USB port.
+          The app can only communicate with a board you have physically connected
+          and approved.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Keeping and deleting your data</h2>
+
+<p>The reading log stays on your phone until you remove it. You can:</p>
+
+<ul>
+  <li>delete an individual board’s log from that board’s page in the app;</li>
+  <li>turn background logging off, which stops new rows being recorded;</li>
+  <li>uninstall the app, which deletes the log, your settings and everything else
+      it has stored.</li>
+</ul>
+
+<p>Because nothing is sent to us, there is no copy of your data anywhere else to
+request or delete.</p>
+
+<h2>Children</h2>
+
+<p>BatteryHolder is a tool for working with electronics hardware and is not
+directed at children. It does not knowingly collect information from anyone,
+regardless of age.</p>
+
+<h2>Changes to this policy</h2>
+
+<p>If the app’s behaviour changes in a way that affects this policy — for example
+if a future version adds an optional online service — this page will be updated
+and the date at the top revised before that version is released.</p>
+
+<h2>Contact</h2>
+
+<p>Questions about this policy or about the app can be sent to
+<a href="mailto:anhbe58@gmail.com">anhbe58@gmail.com</a>.</p>
+
+<footer>
+  BatteryHolder — ESP32 and ESP8266 battery monitoring and firmware flashing.
+</footer>
+
+</div>
+</body>
+</html>
