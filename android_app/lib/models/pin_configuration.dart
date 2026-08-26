@@ -180,6 +180,25 @@ class PinConfiguration {
         wakeButtonPin: board.wakeButtonPin,
       );
 
+  /// A sensible configuration when the app has no board selected in Setup.
+  ///
+  /// Calibrating a board that is in hand must not require a trip through the
+  /// Configuration screen first, so the board settings screen and the board
+  /// page seed this when nothing else has. The defaults match a typical
+  /// dev-board ADC: 12 bits, 3.3 V reference, 100k/100k divider, LiPo 1S.
+  factory PinConfiguration.standalone() => const PinConfiguration(
+        boardId: '',
+        batteryPinId: '',
+        adcResolutionBits: 12,
+        adcRefVoltage: 3.3,
+        dividerR1KOhm: 100,
+        dividerR2KOhm: 100,
+        calibrationFactor: 1.0,
+        sampleIntervalMs: 1000,
+        chemistry: BatteryChemistry.lipo,
+        cellCount: 1,
+      );
+
   PinConfiguration copyWith({
     String? batteryPinId,
     int? adcResolutionBits,
@@ -243,6 +262,30 @@ class PinConfiguration {
         if (statusLedActiveLow != null) 'statusLedActiveLow': statusLedActiveLow,
         if (wakeButtonPin != null) 'wakeButtonPin': wakeButtonPin,
       };
+
+  /// Wire format shared with the firmware — the mirror of [toJson].
+  ///
+  /// Missing keys fall back to the generic defaults of [standalone], so a
+  /// board that stores fewer fields still decodes into a usable configuration.
+  factory PinConfiguration.fromJson(Map<String, dynamic> json) =>
+      PinConfiguration(
+        boardId: json['boardId'] as String? ?? '',
+        batteryPinId: json['batteryPinId'] as String? ?? '',
+        adcResolutionBits: (json['adcResolutionBits'] as num?)?.toInt() ?? 12,
+        adcRefVoltage: (json['adcRefVoltage'] as num?)?.toDouble() ?? 3.3,
+        dividerR1KOhm: (json['dividerR1KOhm'] as num?)?.toDouble() ?? 100,
+        dividerR2KOhm: (json['dividerR2KOhm'] as num?)?.toDouble() ?? 100,
+        calibrationFactor:
+            (json['calibrationFactor'] as num?)?.toDouble() ?? 1.0,
+        sampleIntervalMs: (json['sampleIntervalMs'] as num?)?.toInt() ?? 1000,
+        chemistry:
+            BatteryChemistry.fromJson(json['chemistry'] as String? ?? ''),
+        cellCount: (json['cellCount'] as num?)?.toInt() ?? 1,
+        deviceName: json['deviceName'] as String?,
+        statusLedPin: (json['statusLedPin'] as num?)?.toInt(),
+        statusLedActiveLow: json['statusLedActiveLow'] as bool?,
+        wakeButtonPin: (json['wakeButtonPin'] as num?)?.toInt(),
+      );
 
   @override
   bool operator ==(Object other) =>
