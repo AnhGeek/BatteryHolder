@@ -617,6 +617,27 @@ class BLEManager extends ChangeNotifier {
         withoutResponse: false);
   }
 
+  /// Read the calibration the board is currently using.
+  ///
+  /// Null when the board has no configuration characteristic — a v1 board —
+  /// or when what it sends does not decode. Callers then keep whatever they
+  /// already had rather than inventing numbers.
+  Future<PinConfiguration?> readPinConfiguration() async {
+    if (_peripheral == null) throw BLEException.notConnected;
+    final ch = _chars[BLEUUID.pinConfig];
+    if (ch == null) return null;
+    final data = await ch.read();
+    if (data.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(utf8.decode(data, allowMalformed: true));
+      if (decoded is! Map<String, dynamic>) return null;
+      return PinConfiguration.fromJson(decoded);
+    } catch (_) {
+      // A truncated payload is not worth surfacing.
+      return null;
+    }
+  }
+
   // MARK: Session control (§2.4)
 
   Future<void> _writeSession(List<int> payload) async {
