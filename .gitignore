@@ -37,3 +37,7 @@ samconfig.toml
 *.jks
 *.keystore
 key.properties
+
+## Python bytecode from the tools/ scripts.
+__pycache__/
+*.pyc
