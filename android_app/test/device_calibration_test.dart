@@ -1,8 +1,12 @@
 import 'package:battery_holder/app/app_state.dart';
 import 'package:battery_holder/design_system/components.dart';
 import 'package:battery_holder/design_system/theme.dart';
+import 'package:battery_holder/features/devices/calibration_section.dart';
 import 'package:battery_holder/features/monitor/device_monitor_view.dart';
-import 'package:flutter/material.dart';
+import 'package:battery_holder/features/power/power_view.dart';
+import 'package:battery_holder/models/pin_configuration.dart';
+import 'package:battery_holder/services/ble_manager.dart';
+import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
@@ -10,9 +14,36 @@ import 'widget_test.dart' show previewESP32;
 
 /// Calibrating a board from its own page.
 ///
-/// There is no Bluetooth stack under `flutter test`, so these run the
-/// disconnected path — which is most of what the section has to get right
-/// anyway: the arithmetic is the app's, and only the last step needs a board.
+/// There is no Bluetooth stack under `flutter test`, so the live link is a
+/// [BLEManager] subclass whose getters simply report connected. Calibration
+/// only renders while that link exists — offline, the board settings screen
+/// owns the section — so the disconnected path is asserted separately.
+class _LiveLinkBLE extends BLEManager {
+  final String deviceId;
+
+  _LiveLinkBLE(this.deviceId);
+
+  /// What [readPinConfiguration] answers; null mirrors a v1 board.
+  PinConfiguration? readConfig;
+
+  @override
+  ConnectionState get connection => ConnectionState.connected;
+
+  @override
+  String? get connectedDeviceId => deviceId;
+
+  @override
+  bool get supportsV2 => true;
+
+  @override
+  Future<void> stayAwake({int seconds = 0}) async {}
+
+  @override
+  Future<void> sleepNow({int? intervalSec}) async {}
+
+  @override
+  Future<PinConfiguration?> readPinConfiguration() async => readConfig;
+}
 void main() {
   Widget host(AppState state) => ChangeNotifierProvider<AppState>.value(
         value: state,
@@ -34,7 +65,7 @@ void main() {
 
   testWidgets('the board page carries the calibration, above its log',
       (tester) async {
-    final state = AppState();
+    final state = AppState(ble: _LiveLinkBLE('AA:BB:CC:DD:EE:FF'));
     state.selectBoard(previewESP32);
 
     await tester.pumpWidget(host(state));
@@ -59,7 +90,7 @@ void main() {
 
   testWidgets('changing a resistor moves the voltage as it is typed',
       (tester) async {
-    final state = AppState();
+    final state = AppState(ble: _LiveLinkBLE('AA:BB:CC:DD:EE:FF'));
     state.selectBoard(previewESP32);
 
     await tester.pumpWidget(host(state));
@@ -82,11 +113,129 @@ void main() {
     expect(find.text('13.20 V'), findsOneWidget);
   });
 
-  testWidgets('sending needs a live link to this board', (tester) async {
+  testWidgets('the board page hides calibration until it is connected',
+      (tester) async {
     final state = AppState();
     state.selectBoard(previewESP32);
 
     await tester.pumpWidget(host(state));
+    await tester.pump();
+
+    // Offline, the board page says nothing about calibration — the Devices
+    // tab owns the section while there is no live link.
+    expect(find.text('Calibration'), findsNothing);
+    expect(find.text('R1 (kΩ)'), findsNothing);
+    expect(find.text('Low battery alert'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('board settings carries the calibration section', (tester) async {
+    final state = AppState(ble: _LiveLinkBLE('AA:BB:CC:DD:EE:FF'));
+    state.selectBoard(previewESP32);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: state,
+        child: MaterialApp(
+          theme: buildAppTheme(Brightness.light),
+          home: const PowerView(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // The connected board's settings screen shows the calibration block next
+    // to Advanced — header plus the trim's own row — and has no send button of
+    // its own: "Apply to board" carries it.
+    expect(find.text('Reporting interval'), findsOneWidget);
+    expect(find.text('Calibration'), findsNWidgets(2));
+    expect(find.text('R1 (kΩ)'), findsOneWidget);
+    expect(find.text('Send to device'), findsNothing);
+    expect(find.text('Apply to board'), findsOneWidget);
+    expect(tester.getRect(find.text('R1 (kΩ)')).top,
+        greaterThan(tester.getRect(find.text('Advanced')).top));
+    expect(tester.getRect(find.text('R1 (kΩ)')).top,
+        lessThan(tester.getRect(find.text('Board actions')).top));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('board settings reads the calibration back from the board',
+      (tester) async {
+    final ble = _LiveLinkBLE('AA:BB:CC:DD:EE:FF')
+      ..readConfig = PinConfiguration.standalone()
+          .copyWith(dividerR1KOhm: 220, dividerR2KOhm: 47);
+    final state = AppState(ble: ble);
+    state.selectBoard(previewESP32); // 100k/100k — the read must replace it.
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: state,
+        child: MaterialApp(
+          theme: buildAppTheme(Brightness.light),
+          home: const PowerView(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // The rows now show what the board holds, not what Setup seeded.
+    expect(state.pinConfiguration!.dividerR1KOhm, 220);
+    expect(state.pinConfiguration!.dividerR2KOhm, 47);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('calibration needs no board chosen in Setup first',
+      (tester) async {
+    final state = AppState(ble: _LiveLinkBLE('AA:BB:CC:DD:EE:FF'));
+    // No selectBoard — the working configuration starts empty.
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: state,
+        child: MaterialApp(
+          theme: buildAppTheme(Brightness.light),
+          home: const PowerView(),
+        ),
+      ),
+    );
+    await tester.pump();
+    // The section seeds a generic configuration instead of demanding a trip
+    // through Setup.
+    await tester.pump();
+
+    expect(state.pinConfiguration, isNotNull);
+    expect(find.text('Calibration'), findsNWidgets(2));
+    expect(find.text('R1 (kΩ)'), findsOneWidget);
+    expect(find.textContaining('Pick this board on the Configuration screen'),
+        findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('sending needs a live link to this board', (tester) async {
+    final state = AppState();
+    state.selectBoard(previewESP32);
+
+    // The section itself still knows both halves of the link, so pump it
+    // directly — no board page wraps it without one.
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: state,
+        child: MaterialApp(
+          theme: buildAppTheme(Brightness.light),
+          home: Scaffold(
+            body: SingleChildScrollView(
+              padding: EdgeInsets.all(AppTheme.spacing.lg),
+              child: const CalibrationSection(
+                deviceId: 'AA:BB:CC:DD:EE:FF',
+                isLive: false,
+                rawADC: null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
     await tester.pump();
 
     final send = find.text('Send to device');

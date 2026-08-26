@@ -5,8 +5,10 @@ import '../../app/app_state.dart';
 import '../../design_system/components.dart';
 import '../../design_system/theme.dart';
 import '../../models/device_status.dart';
+import '../../models/pin_configuration.dart';
 import '../../services/ble_manager.dart';
 import '../../services/firmware_flasher.dart';
+import '../devices/calibration_section.dart';
 
 /// Reads and writes the power block — DEVICE_PROTOCOL.md §4, handoff §7.
 ///
@@ -62,6 +64,29 @@ class _PowerViewState extends State<PowerView> {
           ? _power.copyWith(wifiReportSec: status.nextWakeSec)
           : _power.copyWith(bleWakeSec: status.nextWakeSec);
     }
+    // Calibration gets the same treatment: read the board's stored config
+    // back and show it, like the interval above, instead of whatever the app
+    // happens to hold. Deferred a frame — the read is a GATT round trip.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _readCalibration();
+    });
+  }
+
+  /// Read the connected board's stored calibration and show it.
+  ///
+  /// A board that does not answer — or has none, firmware 1.x — keeps whatever
+  /// the app already had, which the calibration section seeds when empty.
+  Future<void> _readCalibration() async {
+    final state = context.read<AppState>();
+    final ble = state.ble;
+    try {
+      final read = await ble.readPinConfiguration();
+      if (!mounted) return;
+      if (read != null) state.pinConfiguration = read;
+    } catch (_) {
+      // A board that stops answering mid-read keeps whatever the app had.
+    }
   }
 
   RunMode get _mode => _ble.status?.mode ?? RunMode.ble;
@@ -76,6 +101,12 @@ class _PowerViewState extends State<PowerView> {
       });
 
   Future<void> _save() async {
+    final state = context.read<AppState>();
+    // The calibration section seeds one when none exists, but Apply must never
+    // fail for want of it.
+    state.pinConfiguration ??= PinConfiguration.standalone();
+    final pinConfig = state.pinConfiguration!;
+
     setState(() {
       _saving = true;
       _error = null;
@@ -85,13 +116,18 @@ class _PowerViewState extends State<PowerView> {
     try {
       // Acked, not just written: the confirmation below is a promise that the
       // board stored this, so it has to come from the board (§2.5).
-      await _ble.withAwakeBoard(() => _ble.writePowerAcked(_power));
+      await _ble.withAwakeBoard(() async {
+        await _ble.writePowerAcked(_power);
+        await _ble.writePinConfiguration(pinConfig);
+      });
       if (!mounted) return;
       setState(() {
         _saving = false;
         _leaving = true;
         _saved = true;
-        _savedText = 'The board confirmed the new settings. Back to Devices…';
+        _savedText =
+            'The board confirmed the new settings and calibration. Back to '
+            'Devices…';
       });
       // The board has it and there is nothing left to do here, so go back to
       // the list. The pause is just long enough to read the confirmation.
@@ -362,6 +398,18 @@ class _PowerViewState extends State<PowerView> {
               ),
             ),
           ],
+          SizedBox(height: AppTheme.spacing.xl),
+
+          // Calibration sits next to Advanced: the board is in hand and
+          // linked, so the divider and trim are edited right here — no trip
+          // through Setup first. The Apply button below sends it together
+          // with the power settings.
+          CalibrationSection(
+            deviceId: _ble.connectedDeviceId ?? '',
+            isLive: true,
+            rawADC: _ble.status?.raw,
+            showSendButton: false,
+          ),
           SizedBox(height: AppTheme.spacing.xl),
 
           PrimaryButton(
