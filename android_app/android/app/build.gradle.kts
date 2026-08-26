@@ -22,7 +22,7 @@ val keystoreProperties = Properties().apply {
 val hasUploadKey = keystoreProperties.containsKey("storeFile")
 
 android {
-    namespace = "store.lyhoanganh.battery_holder"
+    namespace = "com.batteryholder"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -32,7 +32,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "store.lyhoanganh.battery_holder"
+        applicationId = "com.batteryholder"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

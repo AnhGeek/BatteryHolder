@@ -165,9 +165,9 @@ a JSON-lines file; the UI reads the same file back.
 
 | Piece | Where |
 |---|---|
-| Foreground scan service (the writer) | [BeaconScanService.kt](android/app/src/main/kotlin/store/lyhoanganh/battery_holder/BeaconScanService.kt) |
-| Restart after reboot | [BootReceiver.kt](android/app/src/main/kotlin/store/lyhoanganh/battery_holder/BootReceiver.kt) |
-| Start/stop bridge | [MainActivity.kt](android/app/src/main/kotlin/store/lyhoanganh/battery_holder/MainActivity.kt) ↔ [beacon_scan_service_client.dart](lib/services/beacon_scan_service_client.dart) |
+| Foreground scan service (the writer) | [BeaconScanService.kt](android/app/src/main/kotlin/com/batteryholder/BeaconScanService.kt) |
+| Restart after reboot | [BootReceiver.kt](android/app/src/main/kotlin/com/batteryholder/BootReceiver.kt) |
+| Start/stop bridge | [MainActivity.kt](android/app/src/main/kotlin/com/batteryholder/MainActivity.kt) ↔ [beacon_scan_service_client.dart](lib/services/beacon_scan_service_client.dart) |
 | Log file reader + rollup | [beacon_log_store.dart](lib/services/beacon_log_store.dart), [beacon_log.dart](lib/models/beacon_log.dart) |
 | Board list + per-board history | [monitor_view.dart](lib/features/monitor/monitor_view.dart), [device_monitor_view.dart](lib/features/monitor/device_monitor_view.dart) |
 | Per-board delete | `BeaconLogStore.clearDevice` (rewrites the file from what is left) |

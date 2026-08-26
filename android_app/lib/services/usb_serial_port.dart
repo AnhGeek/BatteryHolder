@@ -72,11 +72,11 @@ class UsbSerialException implements Exception {
 /// per screen.
 class UsbSerialPort implements SerialTransport {
   static const MethodChannel _channel =
-      MethodChannel('store.lyhoanganh.battery_holder/usb_serial');
+      MethodChannel('com.batteryholder/usb_serial');
   static const EventChannel _events =
-      EventChannel('store.lyhoanganh.battery_holder/usb_serial/events');
+      EventChannel('com.batteryholder/usb_serial/events');
   static const EventChannel _deviceEvents =
-      EventChannel('store.lyhoanganh.battery_holder/usb_serial/devices');
+      EventChannel('com.batteryholder/usb_serial/devices');
 
   static final UsbSerialPort instance = UsbSerialPort._();
 

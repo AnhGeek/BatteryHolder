@@ -118,7 +118,7 @@ by a different key, so `adb install -r` fails with
 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall first:
 
 ```sh
-adb -s <device> uninstall store.lyhoanganh.battery_holder
+adb -s <device> uninstall com.batteryholder
 ```
 
 This costs the beacon log and the per-board alert settings on that phone. It is

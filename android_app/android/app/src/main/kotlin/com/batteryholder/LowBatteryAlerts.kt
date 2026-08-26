@@ -1,4 +1,4 @@
-package store.lyhoanganh.battery_holder
+package com.batteryholder
 
 import android.app.Notification
 import android.app.NotificationChannel

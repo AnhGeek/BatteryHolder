@@ -73,7 +73,7 @@ class LowBatteryAlerts extends ChangeNotifier {
   static const fileName = 'alerts.json';
 
   static const _channel =
-      MethodChannel('store.lyhoanganh.battery_holder/alerts');
+      MethodChannel('com.batteryholder/alerts');
 
   /// Posts the notification. Swapped out in tests, which have no platform.
   final Future<void> Function(LowBatteryAlert alert) post;

@@ -10,9 +10,9 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const method = MethodChannel('store.lyhoanganh.battery_holder/usb_serial');
+  const method = MethodChannel('com.batteryholder/usb_serial');
   const deviceEvents =
-      MethodChannel('store.lyhoanganh.battery_holder/usb_serial/devices');
+      MethodChannel('com.batteryholder/usb_serial/devices');
 
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;

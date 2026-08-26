@@ -10,7 +10,7 @@ import 'package:permission_handler/permission_handler.dart';
 /// continuously and appends to the same JSON-lines file `BeaconLogStore` reads.
 class BeaconScanServiceClient extends ChangeNotifier {
   static const _channel =
-      MethodChannel('store.lyhoanganh.battery_holder/beacon_scan');
+      MethodChannel('com.batteryholder/beacon_scan');
 
   bool _enabled = false;
   bool _scanning = false;

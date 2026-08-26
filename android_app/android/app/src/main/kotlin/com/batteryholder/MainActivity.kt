@@ -1,4 +1,4 @@
-package store.lyhoanganh.battery_holder
+package com.batteryholder
 
 import android.content.Intent
 import android.os.Build
@@ -10,10 +10,10 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     companion object {
-        private const val CHANNEL = "store.lyhoanganh.battery_holder/beacon_scan"
+        private const val CHANNEL = "com.batteryholder/beacon_scan"
 
         /** Low-battery warnings; see `low_battery_alerts.dart`. */
-        private const val ALERTS_CHANNEL = "store.lyhoanganh.battery_holder/alerts"
+        private const val ALERTS_CHANNEL = "com.batteryholder/alerts"
     }
 
     /** USB-host serial, used to flash and calibrate a board over the cable. */

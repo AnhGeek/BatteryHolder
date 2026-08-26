@@ -1,4 +1,4 @@
-package store.lyhoanganh.battery_holder
+package com.batteryholder
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -36,8 +36,8 @@ import java.util.UUID
 class BeaconScanService : Service() {
 
     companion object {
-        const val ACTION_START = "store.lyhoanganh.battery_holder.START_BEACON_SCAN"
-        const val ACTION_STOP = "store.lyhoanganh.battery_holder.STOP_BEACON_SCAN"
+        const val ACTION_START = "com.batteryholder.START_BEACON_SCAN"
+        const val ACTION_STOP = "com.batteryholder.STOP_BEACON_SCAN"
 
         /** Must match `BeaconLogStore.fileName` on the Dart side. */
         const val LOG_FILE_NAME = "beacons.jsonl"

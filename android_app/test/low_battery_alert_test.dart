@@ -65,7 +65,7 @@ Future<void> _feed(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const channel = MethodChannel('store.lyhoanganh.battery_holder/alerts');
+  const channel = MethodChannel('com.batteryholder/alerts');
   late List<MethodCall> nativeCalls;
 
   setUp(() {

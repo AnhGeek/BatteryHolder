@@ -1,4 +1,4 @@
-package store.lyhoanganh.battery_holder
+package com.batteryholder
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -36,13 +36,13 @@ class UsbSerialBridge(private val context: Context) :
     MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
 
     companion object {
-        const val METHOD_CHANNEL = "store.lyhoanganh.battery_holder/usb_serial"
-        const val EVENT_CHANNEL = "store.lyhoanganh.battery_holder/usb_serial/events"
+        const val METHOD_CHANNEL = "com.batteryholder/usb_serial"
+        const val EVENT_CHANNEL = "com.batteryholder/usb_serial/events"
         const val DEVICE_EVENT_CHANNEL =
-            "store.lyhoanganh.battery_holder/usb_serial/devices"
+            "com.batteryholder/usb_serial/devices"
 
         private const val ACTION_PERMISSION =
-            "store.lyhoanganh.battery_holder.USB_PERMISSION"
+            "com.batteryholder.USB_PERMISSION"
     }
 
     private val manager get() = context.getSystemService(Context.USB_SERVICE) as UsbManager
