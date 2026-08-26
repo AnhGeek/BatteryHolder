@@ -5,14 +5,14 @@ struct RootTabView: View {
 
     var body: some View {
         TabView {
-            NavigationStack { BoardSetupView() }
-                .tabItem { Label("Setup", systemImage: "cpu") }
+            NavigationStack { MonitorView() }
+                .tabItem { Label("Monitor", systemImage: "bolt.fill") }
 
             NavigationStack { DeviceListView() }
                 .tabItem { Label("Devices", systemImage: "antenna.radiowaves.left.and.right") }
 
-            NavigationStack { MonitorView() }
-                .tabItem { Label("Monitor", systemImage: "bolt.fill") }
+            NavigationStack { BoardSetupView() }
+                .tabItem { Label("Setup", systemImage: "cpu") }
 
             NavigationStack { FlashView() }
                 .tabItem { Label("Flash", systemImage: "arrow.down.circle") }
