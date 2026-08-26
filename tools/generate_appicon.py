@@ -90,22 +90,23 @@ def radial_glow(size, inner, outer, cx=0.5, cy=0.42, radius=0.75, res=512):
     return small.resize(size, Image.LANCZOS)
 
 
-def add_circuit(img):
+def add_circuit(img, seed=7, count=22):
     """Draw faint circuit traces on a transparent overlay, blurred slightly."""
-    C = img.size[0]
+    W, H = img.size
+    C = min(W, H)
     ov = Image.new("RGBA", img.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(ov)
-    rnd = random.Random(7)
+    rnd = random.Random(seed)
     lw = max(2, C // 340)
-    for _ in range(22):
-        x = rnd.randint(0, C)
-        y = rnd.randint(0, C)
+    for _ in range(count):
+        x = rnd.randint(0, W)
+        y = rnd.randint(0, H)
         pts = [(x, y)]
         for _ in range(rnd.randint(2, 4)):
             if rnd.random() < 0.5:
-                x = min(C, max(0, x + rnd.choice([-1, 1]) * rnd.randint(C // 12, C // 4)))
+                x = min(W, max(0, x + rnd.choice([-1, 1]) * rnd.randint(C // 12, C // 4)))
             else:
-                y = min(C, max(0, y + rnd.choice([-1, 1]) * rnd.randint(C // 12, C // 4)))
+                y = min(H, max(0, y + rnd.choice([-1, 1]) * rnd.randint(C // 12, C // 4)))
             pts.append((x, y))
         d.line(pts, fill=(*TRACE, 60), width=lw, joint="curve")
         for p in pts:
@@ -122,15 +123,9 @@ def rrect_mask(size, box, radius):
     return m
 
 
-def render_master():
-    C = MASTER
-    # --- background: vertical gradient + radial brand glow (screened in) ---
-    bg = vertical_gradient((C, C), [(0.0, BG_TOP), (0.55, BG_MID), (1.0, BG_BOT)])
-    glow = radial_glow((C, C), GLOW, (0, 0, 0), cx=0.5, cy=0.40, radius=0.85)
-    bg = ImageChops_screen(bg, glow)
-    bg = add_circuit(bg)
-
-    base = bg.convert("RGBA")
+def render_glyph(C):
+    """The glass battery + bolt mark alone, on a transparent C x C canvas."""
+    base = Image.new("RGBA", (C, C), (0, 0, 0, 0))
 
     cx = C / 2
     body_w, body_h = 0.40 * C, 0.54 * C
@@ -234,6 +229,20 @@ def render_master():
     ImageDraw.Draw(edge).polygon(bolt, outline=(255, 255, 255, 220), width=max(2, C // 340))
     base.alpha_composite(edge)
 
+    return base
+
+
+def render_master():
+    C = MASTER
+    # --- background: vertical gradient + radial brand glow (screened in) ---
+    bg = vertical_gradient((C, C), [(0.0, BG_TOP), (0.55, BG_MID), (1.0, BG_BOT)])
+    glow = radial_glow((C, C), GLOW, (0, 0, 0), cx=0.5, cy=0.40, radius=0.85)
+    bg = ImageChops_screen(bg, glow)
+    bg = add_circuit(bg)
+
+    base = bg.convert("RGBA")
+    base.alpha_composite(render_glyph(C))
+
     # flatten to opaque RGB
     return base.convert("RGB")
 
@@ -313,6 +322,15 @@ def main():
     # branding preview (for docs / sharing)
     master1024.save(os.path.join(BRANDING, "app-icon-1024.png"), "PNG")
     print("  wrote docs/branding/app-icon-1024.png")
+
+    # Google Play Store hi-res listing icon: 512x512, 32-bit PNG, <=1 MB.
+    # Play's uploader requires an alpha channel (opaque here — no transparency
+    # in the actual artwork, just the RGBA format Play expects).
+    master512 = master1024.resize((512, 512), Image.LANCZOS).convert("RGBA")
+    play_icon_path = os.path.join(BRANDING, "app-icon-512.png")
+    master512.save(play_icon_path, "PNG", optimize=True)
+    size_kb = os.path.getsize(play_icon_path) / 1024
+    print("  wrote docs/branding/app-icon-512.png (%.0f KB)" % size_kb)
 
 
 if __name__ == "__main__":
