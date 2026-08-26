@@ -237,28 +237,28 @@ class _PinConfigViewState extends State<PinConfigView> {
         AppCard(
           child: Column(
             children: [
-              _NumberRow(
+              NumberRow(
                 label: 'R1 (kΩ)',
                 value: config.dividerR1KOhm,
                 onChanged: (v) => appState.pinConfiguration =
                     config.copyWith(dividerR1KOhm: v),
               ),
               const Divider(),
-              _NumberRow(
+              NumberRow(
                 label: 'R2 (kΩ)',
                 value: config.dividerR2KOhm,
                 onChanged: (v) => appState.pinConfiguration =
                     config.copyWith(dividerR2KOhm: v),
               ),
               const Divider(),
-              _NumberRow(
+              NumberRow(
                 label: 'Calibration',
                 value: config.calibrationFactor,
                 onChanged: (v) => appState.pinConfiguration =
                     config.copyWith(calibrationFactor: v),
               ),
               const Divider(),
-              _NumberRow(
+              NumberRow(
                 label: 'Sample interval (ms)',
                 value: config.sampleIntervalMs.toDouble(),
                 isInteger: true,
@@ -643,7 +643,7 @@ class _PinConfigViewState extends State<PinConfigView> {
           AppCard(
             child: Column(
               children: [
-                _NumberRow(
+                NumberRow(
                   label: 'BLE window (ms)',
                   value: setup.power.bleWindowMs.toDouble(),
                   isInteger: true,
@@ -651,7 +651,7 @@ class _PinConfigViewState extends State<PinConfigView> {
                       power: setup.power.copyWith(bleWindowMs: v.round())),
                 ),
                 const Divider(),
-                _NumberRow(
+                NumberRow(
                   label: 'BLE idle timeout (ms)',
                   value: setup.power.bleIdleMs.toDouble(),
                   isInteger: true,
@@ -659,7 +659,7 @@ class _PinConfigViewState extends State<PinConfigView> {
                       power: setup.power.copyWith(bleIdleMs: v.round())),
                 ),
                 const Divider(),
-                _NumberRow(
+                NumberRow(
                   label: 'Wi-Fi window (ms)',
                   value: setup.power.wifiWindowMs.toDouble(),
                   isInteger: true,
@@ -1020,92 +1020,6 @@ class _TextRow extends StatelessWidget {
 }
 
 /// Label on the left, right-aligned monospaced numeric field on the right.
-class _NumberRow extends StatefulWidget {
-  final String label;
-  final double value;
-  final bool isInteger;
-  final ValueChanged<double> onChanged;
-
-  const _NumberRow({
-    required this.label,
-    required this.value,
-    required this.onChanged,
-    this.isInteger = false,
-  });
-
-  @override
-  State<_NumberRow> createState() => _NumberRowState();
-}
-
-class _NumberRowState extends State<_NumberRow> {
-  late final TextEditingController _controller =
-      TextEditingController(text: _format(widget.value));
-
-  String _format(double v) =>
-      widget.isInteger ? v.round().toString() : _trimZeros(v);
-
-  /// Matches SwiftUI's `.number` format: no trailing ".0" on whole values.
-  static String _trimZeros(double v) =>
-      v == v.roundToDouble() ? v.round().toString() : v.toString();
-
-  @override
-  void didUpdateWidget(_NumberRow old) {
-    super.didUpdateWidget(old);
-    // Reflect changes made elsewhere without fighting the user's cursor.
-    final formatted = _format(widget.value);
-    if (widget.value != old.value &&
-        double.tryParse(_controller.text) != widget.value) {
-      _controller.text = formatted;
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = AppTheme.colorOf(context);
-
-    return Row(
-      children: [
-        Expanded(
-          child: Text(widget.label,
-              style: AppTheme.font.body.copyWith(color: c.textPrimary)),
-        ),
-        SizedBox(
-          width: 120,
-          child: TextField(
-            controller: _controller,
-            textAlign: TextAlign.right,
-            style: AppTheme.font.mono.copyWith(color: c.textPrimary),
-            keyboardType: TextInputType.numberWithOptions(
-                decimal: !widget.isInteger),
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(
-                widget.isInteger ? RegExp(r'[0-9]') : RegExp(r'[0-9.]'),
-              ),
-            ],
-            decoration: InputDecoration(
-              isDense: true,
-              border: InputBorder.none,
-              hintText: widget.label,
-              hintStyle: AppTheme.font.mono.copyWith(color: c.textSecondary),
-              contentPadding: EdgeInsets.zero,
-            ),
-            onChanged: (text) {
-              final parsed = double.tryParse(text);
-              if (parsed != null) widget.onChanged(parsed);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 /// The board's name, or nothing at all — which is a real choice, not a blank.
 class _NameRow extends StatefulWidget {
   final String? value;

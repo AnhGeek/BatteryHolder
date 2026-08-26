@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/board.dart';
 import '../models/pin.dart';
@@ -182,6 +183,117 @@ class SectionHeader extends StatelessWidget {
           Text(subtitle!,
               style: AppTheme.font.footnote.copyWith(color: c.textSecondary)),
         ],
+      ],
+    );
+  }
+}
+
+// MARK: - Form rows
+
+/// A labelled numeric field on one row of an [AppCard] — the shape every
+/// settings row in this app takes.
+///
+/// Editing writes through on every keystroke rather than on submit, because
+/// each of these numbers feeds a reading shown on the same screen: the point of
+/// changing a divider resistor is watching the voltage move as you type. The
+/// field therefore has to tolerate half-typed input, which it does by simply
+/// ignoring anything that will not parse — "3." on the way to "3.7" leaves the
+/// last good value in place instead of collapsing the row to zero.
+class NumberRow extends StatefulWidget {
+  final String label;
+  final double value;
+
+  /// Whole numbers only: no decimal point on the keyboard, none accepted.
+  final bool isInteger;
+
+  /// Placeholder for an empty field. Defaults to [label].
+  final String? hintText;
+
+  /// False greys the row out — the value is worth showing but not editable yet.
+  final bool enabled;
+
+  final ValueChanged<double> onChanged;
+
+  const NumberRow({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+    this.isInteger = false,
+    this.hintText,
+    this.enabled = true,
+  });
+
+  @override
+  State<NumberRow> createState() => _NumberRowState();
+}
+
+class _NumberRowState extends State<NumberRow> {
+  late final TextEditingController _controller =
+      TextEditingController(text: _format(widget.value));
+
+  String _format(double v) =>
+      widget.isInteger ? v.round().toString() : _trimZeros(v);
+
+  /// Matches SwiftUI's `.number` format: no trailing ".0" on whole values.
+  static String _trimZeros(double v) =>
+      v == v.roundToDouble() ? v.round().toString() : v.toString();
+
+  @override
+  void didUpdateWidget(NumberRow old) {
+    super.didUpdateWidget(old);
+    // Reflect changes made elsewhere without fighting the user's cursor.
+    if (widget.value != old.value &&
+        double.tryParse(_controller.text) != widget.value) {
+      _controller.text = _format(widget.value);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+    final labelColor = widget.enabled ? c.textPrimary : c.textSecondary;
+
+    return Row(
+      children: [
+        Expanded(
+          child: Text(widget.label,
+              style: AppTheme.font.body.copyWith(color: labelColor)),
+        ),
+        SizedBox(
+          width: 120,
+          child: TextField(
+            controller: _controller,
+            enabled: widget.enabled,
+            textAlign: TextAlign.right,
+            style: AppTheme.font.mono.copyWith(color: labelColor),
+            keyboardType:
+                TextInputType.numberWithOptions(decimal: !widget.isInteger),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(
+                widget.isInteger ? RegExp(r'[0-9]') : RegExp(r'[0-9.]'),
+              ),
+            ],
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              hintText: widget.hintText ?? widget.label,
+              hintStyle: AppTheme.font.mono.copyWith(color: c.textSecondary),
+              contentPadding: EdgeInsets.zero,
+            ),
+            onChanged: (text) {
+              final parsed = double.tryParse(text);
+              if (parsed != null) widget.onChanged(parsed);
+            },
+          ),
+        ),
       ],
     );
   }

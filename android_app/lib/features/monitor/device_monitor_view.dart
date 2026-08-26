@@ -9,6 +9,8 @@ import '../../design_system/components.dart';
 import '../../design_system/theme.dart';
 import '../../models/beacon_log.dart';
 import '../../models/device_alert_setting.dart';
+import '../../models/pin_configuration.dart';
+import '../../services/ble_manager.dart';
 import '../../services/low_battery_alerts.dart';
 import '../board_awake_mixin.dart';
 import 'monitor_view.dart' show confirmDeleteLog, relativeTime;
@@ -238,6 +240,13 @@ class _DeviceMonitorViewState extends State<DeviceMonitorView>
             ),
           SizedBox(height: AppTheme.spacing.xl),
 
+          _CalibrationSection(
+            deviceId: widget.deviceId,
+            isLive: live,
+            rawADC: reading?.rawADC,
+          ),
+          SizedBox(height: AppTheme.spacing.xl),
+
           _AlertSection(deviceId: widget.deviceId, latestVolts: volts),
           SizedBox(height: AppTheme.spacing.xl),
 
@@ -334,8 +343,10 @@ class _AlertSection extends StatelessWidget {
               ),
               if (setting.enabled) ...[
                 const Divider(),
-                _ThresholdRow(
-                  volts: setting.thresholdVolts,
+                NumberRow(
+                  label: 'Warn below (V)',
+                  hintText: 'Volts',
+                  value: setting.thresholdVolts,
                   onChanged: (v) => alerts.setThreshold(deviceId, v),
                 ),
                 const Divider(),
@@ -414,35 +425,285 @@ class _AlertSection extends StatelessWidget {
   }
 }
 
-/// The threshold, as a voltage typed straight into the row.
-class _ThresholdRow extends StatefulWidget {
-  final double volts;
-  final ValueChanged<double> onChanged;
+/// Dialling in what this board's raw ADC count means, and pushing the answer
+/// back to it.
+///
+/// On the board's own page rather than the Configuration screen for the same
+/// reason the low-battery threshold is: the divider soldered to *this* board is
+/// a fact about this board, and the reading it produces is right above it to
+/// check the arithmetic against. Configuration is where a board is described
+/// before it exists; this is where a board on the bench is corrected.
+///
+/// Edits land in the working configuration immediately, so the pill below moves
+/// as the numbers are typed — the app can already read the board differently
+/// without asking it anything. "Send to device" is the separate, slower half:
+/// making the board itself agree, so its own beacons and its own percentage
+/// carry the same numbers when the phone is not listening.
+class _CalibrationSection extends StatefulWidget {
+  final String deviceId;
 
-  const _ThresholdRow({required this.volts, required this.onChanged});
+  /// True when the app's BLE link belongs to this board. Nothing can be sent
+  /// otherwise, and there is no live count to calibrate against.
+  final bool isLive;
+
+  /// The board's most recent raw ADC count — live only.
+  final int? rawADC;
+
+  const _CalibrationSection({
+    required this.deviceId,
+    required this.isLive,
+    required this.rawADC,
+  });
 
   @override
-  State<_ThresholdRow> createState() => _ThresholdRowState();
+  State<_CalibrationSection> createState() => _CalibrationSectionState();
 }
 
-class _ThresholdRowState extends State<_ThresholdRow> {
-  late final TextEditingController _controller =
-      TextEditingController(text: _format(widget.volts));
+class _CalibrationSectionState extends State<_CalibrationSection> {
+  bool _sending = false;
+  String? _error;
 
-  /// No trailing ".0" on a whole number of volts.
-  static String _format(double v) =>
-      v == v.roundToDouble() ? v.round().toString() : v.toString();
+  /// The configuration as this board last accepted it, so the screen can say
+  /// whether what is on it has actually reached the hardware. Null means "never
+  /// sent from here", which is not the same as "matches" — the board's own
+  /// stored numbers are unknown until we write them.
+  PinConfiguration? _sent;
+
+  /// A meter reading, typed in to set the trim from. Not part of the
+  /// configuration: it is the evidence, not the setting.
+  double? _measured;
+
+  /// Digits kept on a back-solved trim.
+  ///
+  /// Dividing two floats gives something like 1.0234567890123 — true, unusable
+  /// as a number to read or retype, and false precision besides: it comes from
+  /// one noisy ADC sample and a meter with three digits.
+  static double _round(double factor) =>
+      (factor * 10000).roundToDouble() / 10000;
 
   @override
-  void didUpdateWidget(_ThresholdRow old) {
-    super.didUpdateWidget(old);
-    // Reflect a change made elsewhere — "use default" — without fighting the
-    // cursor of someone mid-edit.
-    if (widget.volts != old.volts &&
-        double.tryParse(_controller.text) != widget.volts) {
-      _controller.text = _format(widget.volts);
+  Widget build(BuildContext context) {
+    final c = AppTheme.colorOf(context);
+    final appState = context.watch<AppState>();
+    final config = appState.pinConfiguration;
+
+    if (config == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionHeader(title: 'Calibration'),
+          SizedBox(height: AppTheme.spacing.sm),
+          Callout(
+            text: 'Pick this board on the Configuration screen first — the '
+                'divider and the trim hang off the board they are wired to.',
+            tint: c.textSecondary,
+          ),
+        ],
+      );
+    }
+
+    final raw = widget.rawADC;
+    final reads = raw == null ? null : config.voltageFromRawADC(raw);
+    final maxMeasurable = config.voltageFromRawADC(config.adcMaxCount);
+    final unsent = _sent != config;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(
+          title: 'Calibration',
+          subtitle: 'battery+ → R1 → (ADC pin) → R2 → GND, times a trim.',
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        AppCard(
+          child: Column(
+            children: [
+              NumberRow(
+                label: 'R1 (kΩ)',
+                hintText: 'kΩ',
+                value: config.dividerR1KOhm,
+                onChanged: (v) => appState.pinConfiguration =
+                    config.copyWith(dividerR1KOhm: v),
+              ),
+              const Divider(),
+              NumberRow(
+                label: 'R2 (kΩ)',
+                hintText: 'kΩ',
+                value: config.dividerR2KOhm,
+                onChanged: (v) => appState.pinConfiguration =
+                    config.copyWith(dividerR2KOhm: v),
+              ),
+              const Divider(),
+              NumberRow(
+                label: 'Calibration',
+                hintText: 'Factor',
+                value: config.calibrationFactor,
+                onChanged: (v) => appState.pinConfiguration =
+                    config.copyWith(calibrationFactor: v),
+              ),
+              const Divider(),
+              _MeasuredRow(
+                volts: _measured,
+                // Without a live count there is nothing to solve against, and a
+                // field that silently does nothing is worse than a greyed one.
+                enabled: raw != null,
+                onChanged: (v) => _setMeasured(appState, config, v),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: AppTheme.spacing.xs),
+        Text(
+          raw != null
+              ? 'Put a meter across the pack, type what it says, and the trim '
+                  'moves to make the board agree.'
+              : 'Connect to this board while it is awake to calibrate against '
+                  'a meter reading.',
+          style: AppTheme.font.footnote.copyWith(color: c.textSecondary),
+        ),
+        SizedBox(height: AppTheme.spacing.md),
+
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: StatPill(
+                  label: 'Divider ratio',
+                  value: '${config.dividerRatio.toStringAsFixed(2)}×',
+                ),
+              ),
+              SizedBox(width: AppTheme.spacing.sm),
+              Expanded(
+                child: StatPill(
+                  label: 'Reads now',
+                  value: reads != null ? '${reads.toStringAsFixed(2)} V' : '–',
+                  tint: c.accent,
+                ),
+              ),
+              SizedBox(width: AppTheme.spacing.sm),
+              Expanded(
+                child: StatPill(
+                  label: 'Max measurable',
+                  value: '${maxMeasurable.toStringAsFixed(2)} V',
+                  tint: c.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: AppTheme.spacing.md),
+
+        PrimaryButton(
+          onPressed: widget.isLive && !_sending ? () => _send(appState) : null,
+          child: _sending
+              ? SizedBox(
+                  height: 20,
+                  width: 20,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: c.textOnBrand),
+                )
+              : const LabelRow(
+                  text: 'Send to device', icon: Icons.arrow_upward),
+        ),
+        SizedBox(height: AppTheme.spacing.sm),
+        if (_error != null)
+          Callout(text: _error!, tint: c.danger, icon: Icons.error_outline)
+        else if (!widget.isLive)
+          Callout(
+            text: 'This board is not connected. The numbers above already '
+                'change how the app reads it; sending is what makes the board '
+                'itself use them.',
+            tint: c.brand,
+          )
+        else if (unsent)
+          Callout(
+            text: 'Not sent yet — the board is still working from whatever it '
+                'was last given.',
+            tint: c.warning,
+            icon: Icons.warning_amber_rounded,
+          )
+        else
+          Callout(
+            text: 'Sent. The board stored these and reports through them from '
+                'its next reading on.',
+            tint: c.success,
+            icon: Icons.check_circle_outline,
+          ),
+      ],
+    );
+  }
+
+  /// Take a meter reading and trim the configuration until the board matches.
+  ///
+  /// Deliberately one-shot: it moves the trim at the moment it is typed and
+  /// then leaves it alone. Re-solving on every later edit to R1 or R2 would
+  /// make the Calibration row above unusable, since anything typed into it
+  /// would be overwritten by the next keystroke somewhere else.
+  void _setMeasured(
+      AppState appState, PinConfiguration config, double? volts) {
+    setState(() => _measured = volts);
+    final raw = widget.rawADC;
+    if (raw == null || volts == null) return;
+    final factor =
+        config.calibrationFactorForMeasured(raw: raw, measuredVolts: volts);
+    if (factor == null) return;
+    appState.pinConfiguration =
+        config.copyWith(calibrationFactor: _round(factor));
+  }
+
+  Future<void> _send(AppState appState) async {
+    // Captured before the await so a keystroke landing mid-write cannot be
+    // recorded as sent; `sendPinConfigurationTo` reads the same object.
+    final sending = appState.pinConfiguration;
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    try {
+      await appState.sendPinConfigurationTo(widget.deviceId);
+      if (!mounted) return;
+      setState(() {
+        _sent = sending;
+        _sending = false;
+      });
+    } on BLEException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.message;
+        _sending = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'The board did not take the calibration. It may have gone '
+            'back to sleep — wake it and try again.';
+        _sending = false;
+      });
     }
   }
+}
+
+/// A meter reading, or nothing at all — which is the resting state, because it
+/// is evidence somebody fetches rather than a setting with a sensible default.
+class _MeasuredRow extends StatefulWidget {
+  final double? volts;
+  final bool enabled;
+  final ValueChanged<double?> onChanged;
+
+  const _MeasuredRow({
+    required this.volts,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  @override
+  State<_MeasuredRow> createState() => _MeasuredRowState();
+}
+
+class _MeasuredRowState extends State<_MeasuredRow> {
+  late final TextEditingController _controller = TextEditingController(
+      text: widget.volts == null ? '' : widget.volts!.toStringAsFixed(2));
 
   @override
   void dispose() {
@@ -453,19 +714,21 @@ class _ThresholdRowState extends State<_ThresholdRow> {
   @override
   Widget build(BuildContext context) {
     final c = AppTheme.colorOf(context);
+    final color = widget.enabled ? c.textPrimary : c.textSecondary;
 
     return Row(
       children: [
         Expanded(
-          child: Text('Warn below (V)',
-              style: AppTheme.font.body.copyWith(color: c.textPrimary)),
+          child: Text('Measured (V)',
+              style: AppTheme.font.body.copyWith(color: color)),
         ),
         SizedBox(
           width: 120,
           child: TextField(
             controller: _controller,
+            enabled: widget.enabled,
             textAlign: TextAlign.right,
-            style: AppTheme.font.mono.copyWith(color: c.textPrimary),
+            style: AppTheme.font.mono.copyWith(color: color),
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             inputFormatters: [
               FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
@@ -473,14 +736,12 @@ class _ThresholdRowState extends State<_ThresholdRow> {
             decoration: InputDecoration(
               isDense: true,
               border: InputBorder.none,
-              hintText: 'Volts',
+              disabledBorder: InputBorder.none,
+              hintText: 'Meter',
               hintStyle: AppTheme.font.mono.copyWith(color: c.textSecondary),
               contentPadding: EdgeInsets.zero,
             ),
-            onChanged: (text) {
-              final parsed = double.tryParse(text);
-              if (parsed != null) widget.onChanged(parsed);
-            },
+            onChanged: (text) => widget.onChanged(double.tryParse(text)),
           ),
         ),
       ],

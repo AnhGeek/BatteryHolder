@@ -115,6 +115,27 @@ class PinConfiguration {
     return pinVoltage * dividerRatio * calibrationFactor;
   }
 
+  /// The trim that would make [voltageFromRawADC] report [measuredVolts] for a
+  /// sample of [raw] counts — calibration by multimeter.
+  ///
+  /// Solving for the factor rather than asking for it is the whole point: the
+  /// error a real board has is not a number anyone knows, it is the gap between
+  /// what the pack measures on a meter and what the board says. Type the meter
+  /// reading and the gap closes by construction.
+  ///
+  /// Null when the sample cannot say anything — a zero count, a divider with no
+  /// R2, or a meter reading of zero — because any factor at all satisfies those
+  /// and a silently invented 1.0 would look like a calibration that happened.
+  double? calibrationFactorForMeasured({
+    required int raw,
+    required double measuredVolts,
+  }) {
+    if (raw <= 0 || measuredVolts <= 0) return null;
+    final uncalibrated = raw / adcMaxCount * adcRefVoltage * dividerRatio;
+    if (uncalibrated <= 0) return null;
+    return measuredVolts / uncalibrated;
+  }
+
   /// Estimate state-of-charge (0...1) for the configured pack.
   double percentageForVoltage(double voltage) {
     final cells = cellCount < 1 ? 1 : cellCount;

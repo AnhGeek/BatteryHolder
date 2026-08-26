@@ -69,12 +69,12 @@ class AppState extends ChangeNotifier {
   // cannot reach the Flash tab through its own Navigator. Routing the index
   // through the shared state is what lets "Generate BIN file" hand the user
   // straight to the flash screen.
-  static const int setupTab = 0;
+  static const int monitorTab = 0;
   static const int devicesTab = 1;
-  static const int monitorTab = 2;
+  static const int setupTab = 2;
   static const int flashTab = 3;
 
-  int _selectedTab = setupTab;
+  int _selectedTab = monitorTab;
   int get selectedTab => _selectedTab;
 
   set selectedTab(int value) {
@@ -262,6 +262,24 @@ class AppState extends ChangeNotifier {
       case FlashTransport.wifi:
         await wifi.writePinConfiguration(cfg);
     }
+  }
+
+  /// Push the current configuration to one named board over Bluetooth.
+  ///
+  /// Deliberately not [applyPinConfiguration]: that one follows whichever
+  /// transport the app is set to, which is the right answer during setup and
+  /// the wrong one on a board's own page. A calibration edited while looking at
+  /// one board must land on *that* board, so this refuses rather than writing
+  /// the numbers into whatever else happens to be connected.
+  Future<void> sendPinConfigurationTo(String deviceId) async {
+    final cfg = _pinConfiguration;
+    if (cfg == null) {
+      throw const BLEException('There is no configuration to send yet.');
+    }
+    if (!ble.connection.isConnected || ble.connectedDeviceId != deviceId) {
+      throw BLEException.notConnected;
+    }
+    await ble.withAwakeBoard(() => ble.writePinConfiguration(cfg));
   }
 
   // MARK: Connection

@@ -96,6 +96,27 @@ void main() {
       expect(twoCell.percentageForVoltage(8.4), 1.0);
     });
 
+    test('a meter reading back-solves the trim that matches it', () {
+      // Half scale on a 2x divider reads 3.3 V uncalibrated; the meter says
+      // the pack is really at 3.63, so the trim has to be 1.1.
+      final factor =
+          config.calibrationFactorForMeasured(raw: 2048, measuredVolts: 3.63);
+      expect(factor, isNotNull);
+      expect(factor!, closeTo(1.1, 0.001));
+
+      final trimmed = config.copyWith(calibrationFactor: factor);
+      expect(trimmed.voltageFromRawADC(2048), closeTo(3.63, 0.001));
+    });
+
+    test('a sample that says nothing yields no trim at all', () {
+      // Any factor satisfies these, so inventing one would look like a
+      // calibration that never happened.
+      expect(config.calibrationFactorForMeasured(raw: 0, measuredVolts: 3.7),
+          isNull);
+      expect(config.calibrationFactorForMeasured(raw: 2048, measuredVolts: 0),
+          isNull);
+    });
+
     test('serializes with the keys the firmware expects', () {
       final json = config.toJson();
       expect(json['batteryPinId'], 'gpio34');

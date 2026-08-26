@@ -24,16 +24,16 @@ class _RootTabViewState extends State<RootTabView> {
   final _navKeys = List.generate(4, (_) => GlobalKey<NavigatorState>());
 
   static const _tabs = <_TabSpec>[
-    _TabSpec('Setup', Icons.memory),
-    _TabSpec('Devices', Icons.settings_input_antenna),
     _TabSpec('Monitor', Icons.bolt),
+    _TabSpec('Devices', Icons.settings_input_antenna),
+    _TabSpec('Setup', Icons.memory),
     _TabSpec('Flash', Icons.arrow_circle_down),
   ];
 
   Widget _rootFor(int index) => switch (index) {
-        0 => const BoardSetupView(),
-        1 => const DeviceListView(),
-        2 => const MonitorView(),
+        AppState.monitorTab => const MonitorView(),
+        AppState.devicesTab => const DeviceListView(),
+        AppState.setupTab => const BoardSetupView(),
         _ => const FlashView(),
       };
 
