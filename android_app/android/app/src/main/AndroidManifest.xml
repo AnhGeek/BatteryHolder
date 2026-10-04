@@ -34,7 +34,7 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
-        android:label="BatteryHolder"
+        android:label="BatteryESP"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

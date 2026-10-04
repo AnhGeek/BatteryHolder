@@ -775,7 +775,11 @@ class BLEManager extends ChangeNotifier {
       );
 
   /// Status events that end a provisioning write, one way or the other (§2.5).
-  static const _provisionDone = {'prov/ble mode', 'prov/done'};
+  static const _provisionDone = {
+    'prov/ble mode',
+    'prov/pairing mode',
+    'prov/done',
+  };
   static const _provisionFailed = {'prov/bad json', 'wifi/failed'};
 
   /// Apply a power block and wait for the board to say it took it.

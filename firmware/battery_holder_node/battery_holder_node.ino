@@ -226,6 +226,14 @@ volatile bool notifySubscribed = false; // an app is watching the live stream
 int      lastRaw = 0;
 float    lastVolts = 0.0f;
 
+// A configuration that arrives over BLE is mirrored into the calibration
+// region from loop(), never from the BLE callback. Erasing and writing flash
+// there stalls the BLE host task long enough for the stack to free its own
+// connection bookkeeping underneath it, which shows up as a heap-corruption
+// crash on the disconnect that follows the write.
+volatile bool pendingRegionWrite = false;
+String        pendingRegionBody;
+
 // IDENTIFY blink, driven from loop() rather than from the BLE callback: the
 // old version slept 720 ms inside the GATT write handler, which stalled the
 // stack long enough for the app's write to time out.
@@ -594,6 +602,47 @@ bool writeCalibRegion(const String& payload) {
                          r.offset + CALIB_HEADER_SIZE, len) == ESP_OK;
 }
 
+// Mirrors a configuration that arrived over a live link into the calibration
+// region, so it survives a later app reflash — which blanks NVS and would
+// otherwise leave the region's older contents to be re-applied on the next
+// boot. Without this a calibration sent over Bluetooth lives only in NVS.
+//
+// The body may be a bare PinConfiguration, so it is merged into whatever the
+// region already holds: a patch that only mentions the sensing chain must not
+// drop the region's power block or Wi-Fi credentials.
+//
+// The stamp is bumped and mirrored into NVS so the region and the NVS copy
+// still agree, and the next boot does not re-apply the region over the newer
+// NVS settings.
+bool persistConfigToRegion(const String& body) {
+  DynamicJsonDocument incoming(CALIB_DOC_SIZE);
+  if (deserializeJson(incoming, body)) return false;
+
+  DynamicJsonDocument merged(CALIB_DOC_SIZE);
+  String existing;
+  if (readCalibRegion(existing)) deserializeJson(merged, existing);
+  JsonObject dst = merged.to<JsonObject>();
+  for (JsonPairConst kv : incoming.as<JsonObjectConst>()) {
+    dst[kv.key()] = kv.value();
+  }
+
+  prefs.begin("bh", true);
+  uint32_t stamp = prefs.getULong("calstamp", 0) + 1;
+  prefs.end();
+  if (stamp == 0) stamp = 1;        // only if calstamp wrapped past 2^32
+  merged["stamp"] = stamp;
+
+  String out;
+  serializeJson(merged, out);
+  if (!writeCalibRegion(out)) return false;
+
+  prefs.begin("bh", false);
+  prefs.putULong("calstamp", stamp);
+  prefs.end();
+  Serial.printf("[calib] region refreshed from live config stamp=%u\n", stamp);
+  return true;
+}
+
 // Applied at boot, before the first sample: the region is how a board that has
 // never been provisioned knows which pin the battery is even on.
 void applyCalibRegion() {
@@ -692,6 +741,30 @@ bool applyPowerJson(JsonObjectConst o) {
 }
 
 // ----------------------------------------------------------------- status ---
+
+// Dumps the effective configuration to the serial console.
+//
+// Human-readable, not the JSON protocol: this is what a person watching the
+// cable uses to confirm a board came back from a reset holding the settings
+// they sent it, without opening the app. [tag] says which moment it is —
+// "boot" after a reset, "ble-connected" when a phone links up, "config" right
+// after a live write.
+void printConfig(const char* tag) {
+  Serial.printf("[%s] id=%s name=%s mode=%s prov=%d\n", tag,
+                deviceId().c_str(), deviceName().c_str(),
+                cfg.mode == MODE_WIFI ? "wifi"
+                  : (cfg.mode == MODE_BLE ? "ble" : "pairing"),
+                provisioned() ? 1 : 0);
+  Serial.printf("[%s] batteryPin=gpio%d res=%d ref=%.2fV r1=%.1fk r2=%.1fk "
+                "cal=%.4f\n", tag, cfg.adcPin, cfg.adcResBits, cfg.adcRefVoltage,
+                cfg.r1KOhm, cfg.r2KOhm, cfg.calibration);
+  Serial.printf("[%s] cells=%d vmin=%.2fV vmax=%.2fV ms=%d\n", tag,
+                cfg.cellCount, cfg.cellMinV, cfg.cellMaxV, cfg.sampleMs);
+  Serial.printf("[%s] ledPin=%d ledLow=%d btnPin=%d sleep=%d bleWake=%us "
+                "wifiReport=%us\n", tag, cfg.ledPin, cfg.ledActiveLow ? 1 : 0,
+                cfg.buttonPin, cfg.sleepEnabled ? 1 : 0, cfg.bleWakeSec,
+                cfg.wifiReportSec);
+}
 
 // Compact device status.
 //
@@ -836,6 +909,7 @@ class ServerCB : public BLEServerCallbacks {
     lastBleActivity = millis();
     // A connected app owns the session: never sleep out from under it.
     extendWake(cfg.bleIdleMs);
+    printConfig("ble-connected");   // the settings this link will see
   }
   void onDisconnect(BLEServer* s) override {
     bleConnected = false;
@@ -854,7 +928,15 @@ class CfgCB : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
     lastBleActivity = millis();
     extendWake(cfg.bleIdleMs);
-    applyConfigJson(String(c->getValue().c_str()));
+    String body = c->getValue().c_str();
+    Serial.printf("here");
+    // A payload that did not parse must not be reported as applied — the app
+    // treats this notification as the acknowledgement.
+    if (!applyConfigJson(body)) { pushStatus("config", "bad json"); return; }
+    // Flash I/O and a serial dump are deferred to loop(): doing either here
+    // stalls the BLE host task and corrupts the stack's connection state.
+    pendingRegionBody = body;
+    pendingRegionWrite = true;
     refreshAdvertisementData();     // the name may have just changed
     pushStatus("config");
   }
@@ -919,6 +1001,7 @@ class ProvCB : public BLECharacteristicCallbacks {
 
   void onWrite(BLECharacteristic* c) override {
     lastBleActivity = millis();
+    Serial.printf("here1");
     beginProvisioning(String(c->getValue().c_str()));
   }
 };
@@ -929,7 +1012,12 @@ class ProvCB : public BLECharacteristicCallbacks {
 void beginProvisioning(const String& body) {
   sleepBlocked = true;             // hold the board up for the whole handshake
   DynamicJsonDocument doc(CALIB_DOC_SIZE);
-  if (deserializeJson(doc, body)) {
+  DeserializationError err = deserializeJson(doc, body);
+  // DEBUG: dump the raw provisioning payload. Prints the Wi-Fi password too,
+  // so remove before shipping.
+  Serial.printf("[prov] body(%u): %s\n", (unsigned)body.length(), body.c_str());
+  if (err) {
+    Serial.printf("[prov] json parse failed: %s\n", err.c_str());
     sleepBlocked = false;
     pushStatus("prov", "bad json");
     return;
@@ -956,6 +1044,18 @@ void beginProvisioning(const String& body) {
     cfg.mode = MODE_BLE; runMode = MODE_BLE; savePower();
     refreshAdvertisementData();
     pushStatus("prov", "ble mode");
+    sleepBlocked = false;
+    extendWake(cfg.bleIdleMs);
+    return;
+  }
+
+  // "pairing" is a real, persisted answer — it must not fall through to the
+  // Wi-Fi branch below, or a board being handled on its pairing screen would
+  // try to join a network it was never given and never acknowledge the write.
+  if (mode == "pairing") {
+    cfg.mode = MODE_PAIRING; runMode = MODE_PAIRING; savePower();
+    refreshAdvertisementData();
+    pushStatus("prov", "pairing mode");
     sleepBlocked = false;
     extendWake(cfg.bleIdleMs);
     return;
@@ -1405,7 +1505,7 @@ bool applyCommand(JsonObjectConst cmd) {
   String type = cmd["type"] | "";
   if (type == "setConfig") {
     String body; serializeJson(cmd["config"], body);
-    applyConfigJson(body);
+    if (applyConfigJson(body)) persistConfigToRegion(body);
   } else if (type == "setPower") {
     applyPowerJson(cmd["power"].as<JsonObjectConst>());
   } else if (type == "setMode") {
@@ -1521,7 +1621,10 @@ void setupHTTP() {
   server.on("/api/status", HTTP_GET, [] { server.send(200, "application/json", statusJson()); });
   server.on("/api/config", HTTP_GET, [] { server.send(200, "application/json", configJson()); });
   server.on("/api/config", HTTP_POST, [] {
-    bool ok = applyConfigJson(server.arg("plain"));
+    String body = server.arg("plain");
+    bool ok = applyConfigJson(body);
+    // Same durability as the BLE path: a live change is mirrored to the region.
+    if (ok) persistConfigToRegion(body);
     server.send(ok ? 200 : 400, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
   });
   server.on("/api/power", HTTP_GET, [] {
@@ -1565,6 +1668,8 @@ uint32_t sleepSeconds() {
 }
 
 void goToSleep(uint32_t seconds) {
+  // Belt and braces: deinit() must never run with a central still attached.
+  if (bleConnected) return;
   if (seconds < 1) seconds = 1;
   pushStatus("sleeping");
   delay(60);                       // let the last notification drain
@@ -1591,23 +1696,25 @@ void goToSleep(uint32_t seconds) {
 
 // The single place that decides whether this wake is over.
 void maybeSleep() {
-  if (sleepRequested) { goToSleep(sleepSeconds()); return; }
-  if (!cfg.sleepEnabled || sleepBlocked) return;
+  if (!cfg.sleepEnabled) { sleepRequested = false; return; }
+  if (sleepBlocked) return;         // app asked us to stay up
   if (serialAttached()) return;     // a phone is mid-conversation on the cable
   // Sleeping would take the native USB port down with it, so a board on a USB
-  // host stays up until the cable comes out.
-  if (usbConsoleAttached()) return;
+  // host stays up until the cable comes out. This also overrides SLEEP_NOW.
+  if (usbConsoleAttached()) { sleepRequested = false; return; }
   if (otaActive) { extendWake(30000); return; }
   if (blinkEdgesLeft > 0) return;   // finish identifying first
 
-  if (bleConnected) {
-    // An app watching the stream keeps the board up; a silent one does not.
-    if (!notifySubscribed && millis() - lastBleActivity > cfg.bleIdleMs) {
-      goToSleep(sleepSeconds());
-    }
-    return;
-  }
-  if ((int32_t)(millis() - stayAwakeUntil) >= 0) goToSleep(sleepSeconds());
+  // Never tear the BLE stack down while a central is still attached: deinit()
+  // with a live link frees the server's connection table while the stack is
+  // still using it, which asserts on the disconnect that follows. A SLEEP_NOW
+  // from the app is not lost — it is honoured once the link drops, because
+  // onDisconnect() shortens this wake. Deferring it here is what keeps the app's
+  // "apply then sleep" handshake from corrupting the heap.
+  if (bleConnected) return;
+
+  if (sleepRequested || (int32_t)(millis() - stayAwakeUntil) >= 0)
+    goToSleep(sleepSeconds());
 }
 
 // ------------------------------------------------------------------ setup ---
@@ -1623,6 +1730,7 @@ void setup() {
   // and it is the only thing a board that has never been provisioned has.
   applyCalibRegion();
   sampleBattery();
+  printConfig("boot");   // what this reset actually came up with
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   bool buttonWake = cause == ESP_SLEEP_WAKEUP_EXT0 ||
@@ -1690,6 +1798,14 @@ void loop() {
   if (provPending) {
     provPending = false;
     finishProvisioning();
+  }
+
+  // A live config write waits here to be mirrored into the region, on the main
+  // task, away from the BLE callback.
+  if (pendingRegionWrite) {
+    pendingRegionWrite = false;
+    printConfig("config");          // confirm what the board just took
+    persistConfigToRegion(pendingRegionBody);
   }
 
   serviceIdentify();

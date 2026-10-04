@@ -385,6 +385,42 @@ bool writeCalibRegion(const String& payload) {
   return ok;
 }
 
+// Mirrors a configuration that arrived over Wi-Fi into the calibration region,
+// so it survives a later reflash — which blanks EEPROM and would otherwise
+// leave the region's older contents to be re-applied on the next boot. The
+// body may be a bare PinConfiguration, so it is merged into whatever the
+// region already holds; a patch that only mentions the sensing chain must not
+// drop the region's power block or credentials.
+//
+// The stamp is bumped and mirrored into EEPROM so the region and the EEPROM
+// copy still agree, and the next boot does not re-apply the region over the
+// newer saved settings.
+bool persistConfigToRegion(const String& body) {
+  DynamicJsonDocument incoming(CALIB_DOC_SIZE);
+  if (deserializeJson(incoming, body)) return false;
+
+  DynamicJsonDocument merged(CALIB_DOC_SIZE);
+  String existing;
+  if (readCalibRegion(existing)) deserializeJson(merged, existing);
+  JsonObject dst = merged.to<JsonObject>();
+  for (JsonPairConst kv : incoming.as<JsonObjectConst>()) {
+    dst[kv.key()] = kv.value();
+  }
+
+  uint32_t stamp = cfg.calibStamp + 1;
+  if (stamp == 0) stamp = 1;       // only if calibStamp wrapped past 2^32
+  merged["stamp"] = stamp;
+
+  String out;
+  serializeJson(merged, out);
+  if (!writeCalibRegion(out)) return false;
+
+  cfg.calibStamp = stamp;
+  saveConfig();
+  Serial.printf("[calib] region refreshed from live config stamp=%u\n", stamp);
+  return true;
+}
+
 // Applied at boot, before the first sample: on a board that has never been
 // provisioned this is the only description of the hardware there is.
 void applyCalibRegion() {
@@ -833,7 +869,10 @@ void setupHTTP() {
   server.on("/api/status", HTTP_GET, [] { server.send(200, "application/json", statusJson()); });
   server.on("/api/config", HTTP_GET, [] { server.send(200, "application/json", configJson()); });
   server.on("/api/config", HTTP_POST, [] {
-    bool ok = applyConfigJson(server.arg("plain"));
+    String body = server.arg("plain");
+    bool ok = applyConfigJson(body);
+    // Same durability as the USB path: a live change is mirrored to the region.
+    if (ok) persistConfigToRegion(body);
     server.send(ok ? 200 : 400, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
   });
   server.on("/api/provision", HTTP_POST, handleProvision);

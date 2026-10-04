@@ -117,8 +117,10 @@ class _PowerViewState extends State<PowerView> {
       // Acked, not just written: the confirmation below is a promise that the
       // board stored this, so it has to come from the board (§2.5).
       await _ble.withAwakeBoard(() async {
-        await _ble.writePowerAcked(_power);
+        // Calibration first: it is the setting this screen exists to change,
+        // and it must not be lost if the power write is the one that fails.
         await _ble.writePinConfiguration(pinConfig);
+        await _ble.writePowerAcked(_power);
       });
       if (!mounted) return;
       setState(() {

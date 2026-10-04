@@ -10,7 +10,6 @@ import '../../models/beacon_log.dart';
 import '../../models/device_alert_setting.dart';
 import '../../services/low_battery_alerts.dart';
 import '../board_awake_mixin.dart';
-import '../devices/calibration_section.dart';
 import 'monitor_view.dart' show confirmDeleteLog, relativeTime;
 
 /// One board's readings: live over BLE while it is awake and connected, and the
@@ -237,17 +236,6 @@ class _DeviceMonitorViewState extends State<DeviceMonitorView>
               tint: c.brand,
             ),
           SizedBox(height: AppTheme.spacing.xl),
-
-          // Calibration is only live while the app's BLE link belongs to this
-          // board — offline, the Devices tab owns the section instead.
-          if (live) ...[
-            CalibrationSection(
-              deviceId: widget.deviceId,
-              isLive: true,
-              rawADC: reading?.rawADC,
-            ),
-            SizedBox(height: AppTheme.spacing.xl),
-          ],
 
           _AlertSection(deviceId: widget.deviceId, latestVolts: volts),
           SizedBox(height: AppTheme.spacing.xl),
