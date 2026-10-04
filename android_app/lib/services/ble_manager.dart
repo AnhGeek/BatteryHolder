@@ -609,12 +609,19 @@ class BLEManager extends ChangeNotifier {
 
   // MARK: Pin configuration
 
+  /// Write a whole [PinConfiguration].
+  ///
+  /// This is a **long write** on purpose. The payload is ~285 bytes once the
+  /// wiring overrides are included, and the negotiated MTU is typically 256,
+  /// which caps a single ATT write at 253 — a plain write fails outright with
+  /// "data longer than allowed". The ESP32's GATT server implements the
+  /// prepare/execute long-write procedure, so the stack splits it for us.
   Future<void> writePinConfiguration(PinConfiguration config) async {
     if (_peripheral == null) throw BLEException.notConnected;
     final ch = _chars[BLEUUID.pinConfig];
     if (ch == null) throw BLEException.missingCharacteristic;
     await ch.write(utf8.encode(jsonEncode(config.toJson())),
-        withoutResponse: false);
+        withoutResponse: false, allowLongWrite: true);
   }
 
   /// Read the calibration the board is currently using.
@@ -736,7 +743,11 @@ class BLEManager extends ChangeNotifier {
       'reportIntervalSec': ?reportIntervalSec,
       'power': ?power?.toJson(),
     };
-    await ch.write(utf8.encode(jsonEncode(payload)), withoutResponse: false);
+    // Long write: a payload carrying Wi-Fi credentials runs past the 253-byte
+    // single-write ceiling at the usual 256-byte MTU. See
+    // [writePinConfiguration] for the reasoning.
+    await ch.write(utf8.encode(jsonEncode(payload)),
+        withoutResponse: false, allowLongWrite: true);
   }
 
   /// Correct the cached scan entry after setup succeeds.

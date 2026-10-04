@@ -94,11 +94,11 @@ class _PowerViewState extends State<PowerView> {
   int get _interval => _power.intervalSecFor(_mode);
 
   void _setInterval(int seconds) => setState(() {
-        _power = _mode == RunMode.wifi
-            ? _power.copyWith(wifiReportSec: seconds)
-            : _power.copyWith(bleWakeSec: seconds);
-        _saved = false;
-      });
+    _power = _mode == RunMode.wifi
+        ? _power.copyWith(wifiReportSec: seconds)
+        : _power.copyWith(bleWakeSec: seconds);
+    _saved = false;
+  });
 
   Future<void> _save() async {
     final state = context.read<AppState>();
@@ -212,10 +212,12 @@ class _PowerViewState extends State<PowerView> {
     try {
       final blinked = await _ble.identify();
       if (!mounted) return;
-      setState(() => _note = blinked
-          ? 'The board is blinking its LED now.'
-          : 'This board has no status LED, so nothing will blink. Wire one and '
-              'reflash with -DSTATUS_LED_PIN=<gpio> to use Identify.');
+      setState(
+        () => _note = blinked
+            ? 'The board is blinking its LED now.'
+            : 'This board has no status LED, so nothing will blink. Wire one and '
+                  'reflash with -DSTATUS_LED_PIN=<gpio> to use Identify.',
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Identify failed: ${describeError(e)}');
@@ -254,11 +256,24 @@ class _PowerViewState extends State<PowerView> {
         listenable: _ble,
         builder: (context, _) {
           if (!_ble.connection.isConnected) {
-            return const ContentUnavailable(
-              title: 'Board not connected',
+            // Say why the link is gone instead of a flat "not connected", and
+            // never swallow [_error] — an Apply that failed and then lost the
+            // link is exactly when the reason matters most, and this branch
+            // sits above the callout that would have shown it.
+            final sleeping =
+                _ble.connection.status == ConnectionStatus.sleeping;
+            return ContentUnavailable(
+              title: sleeping
+                  ? 'Board went back to sleep'
+                  : 'Board not connected',
               message:
-                  'Connect to a board on the Devices tab to change how it sleeps.',
-              icon: Icons.settings,
+                  _error ??
+                  (sleeping
+                      ? 'Its wake window ended before the settings were sent. '
+                            'Wake the board (its RST button) and connect again.'
+                      : 'Connect to a board on the Devices tab to change how it '
+                            'sleeps.'),
+              icon: sleeping ? Icons.bedtime : Icons.settings,
             );
           }
           if (!_ble.supportsV2) {
@@ -306,7 +321,8 @@ class _PowerViewState extends State<PowerView> {
 
           const SectionHeader(
             title: 'Sleep',
-            subtitle: 'Turning this off keeps the board awake — and flattens '
+            subtitle:
+                'Turning this off keeps the board awake — and flattens '
                 'the pack in hours rather than weeks.',
           ),
           SizedBox(height: AppTheme.spacing.sm),
@@ -314,9 +330,10 @@ class _PowerViewState extends State<PowerView> {
             child: Row(
               children: [
                 Expanded(
-                  child: Text('Sleep between readings',
-                      style:
-                          AppTheme.font.body.copyWith(color: c.textPrimary)),
+                  child: Text(
+                    'Sleep between readings',
+                    style: AppTheme.font.body.copyWith(color: c.textPrimary),
+                  ),
                 ),
                 Switch(
                   value: _power.sleepEnabled,
@@ -343,8 +360,10 @@ class _PowerViewState extends State<PowerView> {
                         : 'Wake windows, idle timeout, BLE during Wi-Fi.',
                   ),
                 ),
-                Icon(_showAdvanced ? Icons.expand_less : Icons.expand_more,
-                    color: c.textSecondary),
+                Icon(
+                  _showAdvanced ? Icons.expand_less : Icons.expand_more,
+                  color: c.textSecondary,
+                ),
               ],
             ),
           ),
@@ -383,9 +402,12 @@ class _PowerViewState extends State<PowerView> {
                   Row(
                     children: [
                       Expanded(
-                        child: Text('BLE while in Wi-Fi mode',
-                            style: AppTheme.font.body
-                                .copyWith(color: c.textPrimary)),
+                        child: Text(
+                          'BLE while in Wi-Fi mode',
+                          style: AppTheme.font.body.copyWith(
+                            color: c.textPrimary,
+                          ),
+                        ),
                       ),
                       Switch(
                         value: _power.bleInWifi,
@@ -421,14 +443,19 @@ class _PowerViewState extends State<PowerView> {
                     height: 20,
                     width: 20,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: c.textOnBrand),
+                      strokeWidth: 2,
+                      color: c.textOnBrand,
+                    ),
                   )
                 : const Text('Apply to board'),
           ),
           if (_saved) ...[
             SizedBox(height: AppTheme.spacing.sm),
             Callout(
-                text: _savedText, tint: c.success, icon: Icons.check_circle),
+              text: _savedText,
+              tint: c.success,
+              icon: Icons.check_circle,
+            ),
           ],
           if (_error != null) ...[
             SizedBox(height: AppTheme.spacing.sm),
@@ -444,7 +471,9 @@ class _PowerViewState extends State<PowerView> {
           SecondaryButton(
             onPressed: _identify,
             child: const LabelRow(
-                text: 'Identify (blink the LED)', icon: Icons.lightbulb),
+              text: 'Identify (blink the LED)',
+              icon: Icons.lightbulb,
+            ),
           ),
           if (_note != null) ...[
             SizedBox(height: AppTheme.spacing.sm),
@@ -452,31 +481,40 @@ class _PowerViewState extends State<PowerView> {
           ],
           SizedBox(height: AppTheme.spacing.sm),
           SecondaryButton(
-            onPressed: () => _session('Forget Wi-Fi', _ble.forgetWifi,
-                confirm: 'The board will drop its Wi-Fi credentials and fall '
-                    'back to Bluetooth mode.'),
+            onPressed: () => _session(
+              'Forget Wi-Fi',
+              _ble.forgetWifi,
+              confirm:
+                  'The board will drop its Wi-Fi credentials and fall '
+                  'back to Bluetooth mode.',
+            ),
             child: const LabelRow(text: 'Forget Wi-Fi', icon: Icons.wifi_off),
           ),
           SizedBox(height: AppTheme.spacing.sm),
           SecondaryButton(
             onPressed: _disconnect,
             child: const LabelRow(
-                text: 'Disconnect Bluetooth', icon: Icons.bluetooth_disabled),
+              text: 'Disconnect Bluetooth',
+              icon: Icons.bluetooth_disabled,
+            ),
           ),
           SizedBox(height: AppTheme.spacing.sm),
           _DangerButton(
             label: 'Factory reset',
             icon: Icons.restart_alt,
-            onPressed: () => _session('Factory reset', _ble.factoryReset,
-                confirm: 'This wipes the board’s settings and reboots it '
-                    'into pairing mode. You will have to set it up again.',
-                leaves: true),
+            onPressed: () => _session(
+              'Factory reset',
+              _ble.factoryReset,
+              confirm:
+                  'This wipes the board’s settings and reboots it '
+                  'into pairing mode. You will have to set it up again.',
+              leaves: true,
+            ),
           ),
         ],
       ),
     );
   }
-
 }
 
 /// One wake interval, offered as a tappable pill. Twelve options do not fit a
@@ -503,7 +541,9 @@ class _IntervalChip extends StatelessWidget {
         duration: Motion.quick,
         constraints: const BoxConstraints(minWidth: 64),
         padding: EdgeInsets.symmetric(
-            horizontal: AppTheme.spacing.md, vertical: AppTheme.spacing.sm),
+          horizontal: AppTheme.spacing.md,
+          vertical: AppTheme.spacing.sm,
+        ),
         decoration: BoxDecoration(
           color: isSelected ? c.brand.withValues(alpha: 0.16) : c.surface,
           borderRadius: BorderRadius.circular(AppTheme.radius.pill),
@@ -538,8 +578,9 @@ class _NumberRow extends StatefulWidget {
 }
 
 class _NumberRowState extends State<_NumberRow> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.value.toString());
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.value.toString(),
+  );
 
   @override
   void dispose() {
@@ -553,8 +594,10 @@ class _NumberRowState extends State<_NumberRow> {
     return Row(
       children: [
         Expanded(
-          child: Text(widget.label,
-              style: AppTheme.font.body.copyWith(color: c.textPrimary)),
+          child: Text(
+            widget.label,
+            style: AppTheme.font.body.copyWith(color: c.textPrimary),
+          ),
         ),
         SizedBox(
           width: 110,
@@ -607,7 +650,9 @@ class _DangerButton extends StatelessWidget {
           style: AppTheme.font.headline.copyWith(color: c.danger),
           child: IconTheme(
             data: IconThemeData(color: c.danger, size: 20),
-            child: Center(child: LabelRow(text: label, icon: icon)),
+            child: Center(
+              child: LabelRow(text: label, icon: icon),
+            ),
           ),
         ),
       ),
